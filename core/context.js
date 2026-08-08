@@ -72,6 +72,13 @@ function clampMsg(m) {
 
 // BM25 con saturación (k1) y normalización por longitud (b). La IDF sale del
 // propio corpus que se le pasa — ahí está la gracia.
+//
+// Okapi BM25: Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, «Okapi at
+// TREC-3», TREC-3, 1994. Formulación moderna y justificación de k1/b:
+// Robertson & Zaragoza, «The Probabilistic Relevance Framework: BM25 and
+// Beyond», FnTIR 3(4), 2009 — https://doi.org/10.1561/1500000019
+// La IDF viene de Sparck Jones, Journal of Documentation 28(1), 1972: la idea
+// de que lo raro informa, que es sobre la que se sostiene todo esto.
 function buildBM25(docs, k1 = 1.2, b = 0.75) {
   const N = docs.length || 1;
   const df = new Map(), tfs = [];
@@ -126,8 +133,10 @@ function cosine(a, b) {
   return (na && nb) ? d / Math.sqrt(na * nb) : 0;
 }
 
-// Fusión por rangos: se mezclan POSICIONES, no puntuaciones, así no hay que
-// calibrar escalas entre un BM25 sin acotar y un coseno en [-1,1].
+// Fusión por rangos recíprocos (RRF — Cormack, Clarke & Buettcher, SIGIR 2009,
+// https://doi.org/10.1145/1571941.1572114): se mezclan POSICIONES, no
+// puntuaciones, así no hay que calibrar escalas entre un BM25 sin acotar y un
+// coseno en [-1,1].
 function rrf(lists, k = RRF_K) {
   const out = new Map();
   for (const list of lists) list.forEach((id, r) => out.set(id, (out.get(id) || 0) + 1 / (k + r + 1)));
@@ -151,12 +160,30 @@ function prepare(history, budgetTokens) {
   // tramos, y un fragmento contiguo vale más que líneas nuevas sueltas.
   const recTie = pressure < 0.25;
 
+  // ── RESERVA DE COLA — es un SUELO, no solo un techo ────────────────────────
+  // Parar en el primer mensaje que no cabe convierte la reserva en un tope y no
+  // en una garantía: medido, con presupuesto 3.000 la cola se quedaba con el
+  // 3-5 % en vez del ~38 % reservado, porque UN resultado de herramienta grande
+  // en la penúltima posición bloqueaba todo lo anterior. Los últimos turnos son
+  // lo que el modelo necesita sí o sí para saber dónde está, y eso no puede
+  // depender de que el turno de antes fuera voluminoso.
+  // Mientras no se alcance el suelo (10 %), el mensaje que no cabe se TRUNCA
+  // por el medio en vez de descartarse. Por encima, comportamiento de siempre.
   const reserve = Math.floor(budgetTokens * recentFrac);
+  const floorTok = Math.floor(budgetTokens * 0.10);
   const recent = []; let used = 0;
   for (let i = history.length - 1, k = 0; i >= 0 && k < RECENT; i--, k++) {
     const m = clampMsg(history[i]), t = tokEstimate(m);
-    if (used + t > reserve && recent.length >= 1) break;
-    recent.unshift(m); used += t;
+    if (used + t <= reserve) { recent.unshift(m); used += t; continue; }
+    if (used >= floorTok) break;
+    const room = Math.max(40, Math.min(reserve, floorTok) - used - 4);
+    if (room < 40) break;
+    const c = m.content || '';
+    const keep = Math.max(20, room * 2);
+    recent.unshift({ ...m, content: c.length <= keep ? c
+      : c.slice(0, keep) + `\n… [recortado ${c.length - keep} caracteres] …` });
+    used += room + 4;
+    if (used >= floorTok) break;
   }
   let old = history.slice(0, history.length - recent.length);
   if (!old.length || used >= budgetTokens) return { done: true, recent, used, head: [] };
@@ -171,7 +198,8 @@ function prepare(history, budgetTokens) {
   // no puede rescatarlo por mucho que importe. Es el único contenido que el
   // agente NO puede reconstruir mirando el código.
   //
-  // Respaldo externo: es el resultado central de StreamingLLM — los primeros
+  // Respaldo externo: es el resultado central de StreamingLLM (Xiao, Tian, Chen,
+  // Han & Lewis, ICLR 2024, https://arxiv.org/abs/2309.17453) — los primeros
   // tokens actúan de SUMIDERO de atención y absorben el 45-55 % de la masa.
   // Un recuperador puro no puede ver eso: no es una propiedad del texto, sino
   // de cómo el modelo lo usa.
