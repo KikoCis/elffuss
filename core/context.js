@@ -159,6 +159,10 @@ function prepare(history, budgetTokens) {
   // holgura RESTA −8: ahí gana el orden del documento, que mantiene juntos los
   // tramos, y un fragmento contiguo vale más que líneas nuevas sueltas.
   const recTie = pressure < 0.25;
+  // La cabecera va SIEMPRE, sin puerta: con la ventana elástica dejó de ser
+  // cierto que "con holgura el encargo sobrevive solo" — sobrevivía porque
+  // rellenábamos hasta el borde. Medido, al dejar de rellenar caía del 100 % al
+  // 0 % a presupuesto 16.000. Era un accidente del relleno, no tener sitio.
 
   // ── RESERVA DE COLA — es un SUELO, no solo un techo ────────────────────────
   // Parar en el primer mensaje que no cabe convierte la reserva en un tope y no
@@ -210,7 +214,7 @@ function prepare(history, budgetTokens) {
   //     presupuesto 16.000:  el encargo sobrevive 100 % →  100 %
   //     hechos de media sesión: 85,7 % → 85,7 %  ·  91,1 % → 91,1 %
   // O sea: rescata el encargo de nunca a siempre y NO cuesta nada.
-  const headReserve = pressure < 0.25 ? Math.floor(budgetTokens * 0.05) : 0;
+  const headReserve = Math.floor(budgetTokens * 0.05);
   const head = []; let headUsed = 0;
   for (let i = 0; i < old.length; i++) {
     const m = clampMsg(old[i]), t = tokEstimate(m);
@@ -268,13 +272,26 @@ function selectAndEmit(ctx, budgetTokens) {
     }
     remaining.delete(best);
     const it = byId.get(best), c = cost(it);
+    if (it.score < 10) continue;                 // el MMR diversifica DENTRO de lo relevante
     if (used + c > budgetTokens) continue;
     keep.add(best); used += c;
     const bs = tok.get(best);
     for (const id of remaining) maxSim.set(id, Math.max(maxSim.get(id), jaccard(tok.get(id), bs)));
   }
-  for (const it of pool) {                       // lo que quede se llena a lo bruto
+  // VENTANA ELÁSTICA: el presupuesto es un TECHO, no una cuota que agotar. Sin
+  // esto, el 38 % del presupuesto a 3.000 y el 56 % a 16.000 se iba en líneas
+  // sin una sola palabra en común con la pregunta. Y lo irrelevante no es
+  // lastre neutro: recuperar bien BATE al contexto completo (F1 28,09 vs
+  // 22,56), o sea que rellenar hasta el borde reintroduce a mano lo que la
+  // compresión venía a quitar. La ventana se para cuando se acaba la evidencia
+  // (estrato ≥ 10), no cuando se acaban los tokens.
+  // ⚠️ Es un INTERCAMBIO: gratis con presupuesto apretado (el de los
+  // productos), pero a 32.000 ahorra el 60 % de tokens a costa de 8,9 puntos de
+  // presencia del dato. Que eso compense depende de si menos ruido mejora la
+  // respuesta, y este banco mide presencia, no calidad.
+  for (const it of pool) {
     const id = idOf(it); if (keep.has(id)) continue;
+    if (it.score < 10) break;                    // se acabó lo relevante
     const c = cost(it);
     if (used + c > budgetTokens) continue;
     keep.add(id); used += c;
