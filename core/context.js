@@ -156,9 +156,12 @@ function rrf(lists, k = RRF_K) {
  * verdadera sigue 8/8, sin coste en recall.
  *
  * El objetivo NO viene en el resultado: sale de la llamada del asistente
- * anterior. Y se DEGRADA, no se borra: si alguien pregunta expresamente qué
- * decía antes, sigue estando. «Esto ya no es cierto» y «esto no existió nunca»
- * son afirmaciones distintas, y solo la primera es verdad.
+ * anterior. Se DEGRADA, no se borra — con una salvedad medida: preguntando
+ * EXPRESAMENTE por el valor anterior, la vieja vuelve 0 de 8 veces. Está en el
+ * conjunto y no se recupera, porque compite entre cientos de líneas de
+ * puntuación cero y quién vuelve lo decide la diversidad, no la pregunta.
+ * ALCANZABLE NO ES RECUPERABLE: la diferencia entre «ya no es cierto» y «nunca
+ * existió» es real en la estructura y aún no en el comportamiento.
  */
 function markSuperseded(msgs) {
   const lastFor = new Map(), targetOf = new Map();
