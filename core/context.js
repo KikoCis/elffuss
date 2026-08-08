@@ -299,7 +299,15 @@ export function packHistory(history, budgetTokens = 2200) {
  *
  * `embed(textos) -> vectores`. Se codifica por bloques de líneas, no línea a
  * línea, porque codificar cada línea es prohibitivo y la señal sobrevive al
- * troceado. Si no se pasa `embed`, o si falla, cae limpiamente a la vía léxica.
+ * troceado.
+ *
+ * ★ El tamaño de bloque es FIJO a propósito, y es lo que hace que la caché
+ * sirva. Con bloques fijos las fronteras no se mueven al crecer el historial
+ * (0-4, 5-9, …), así que el texto de un bloque ya codificado NO cambia nunca y
+ * un turno sólo paga lo NUEVO. Si el tamaño se DERIVA del número de líneas,
+ * cada vez que ese número cruza un umbral cambian TODOS los bloques y la caché
+ * falla entera — medido, el turno pasa a encarecerse según avanza la sesión en
+ * vez de abaratarse. Es el «indexar al escribir» del que depende todo esto. Si no se pasa `embed`, o si falla, cae limpiamente a la vía léxica.
  *
  * Por qué fusionar y no sustituir: medido, BM25 y los embeddings EMPATAN
  * en global, pero NO hacen el mismo trabajo. Partiendo las preguntas por solape
@@ -308,9 +316,26 @@ export function packHistory(history, budgetTokens = 2200) {
  * los DOS (24,05 / 32,73). Lo semántico no sustituye al léxico: le cubre el
  * punto ciego.
  */
+// El lado semántico va tras bandera y APAGADO por defecto. La ganancia es real
+// (+4,50 F1) pero el precio no es despreciable y depende del equipo de quien lo
+// usa: son ~235 MB la primera vez, y sin WebGPU el turno se encarece siempre.
+// Cableado, probado, y se enciende a petición. Con la bandera apagada embed.js
+// —y con él transformers.js y el modelo— NI SE IMPORTA: coste exactamente cero.
+//   localStorage.setItem('elffuss.semantic', 'on')
+function semanticoOn() {
+  try { return localStorage.getItem('elffuss.semantic') === 'on'; } catch { return false; }
+}
+
 export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) {
-  const { embed, block = 5, cache } = opts;
+  let { embed, block = 5, cache } = opts;
   if (!history.length) return history;
+  // Sin `embed` explícito, se resuelve por bandera con import DINÁMICO.
+  if (!embed && semanticoOn()) {
+    try {
+      const m = await import('./embed.js');
+      embed = m.embed; cache = cache || m.embedCache();
+    } catch { /* sin modelo → vía léxica, la app NO deja de funcionar */ }
+  }
   if (!embed) return packHistory(history, budgetTokens);
   const ctx = prepare(history, budgetTokens);
   if (ctx.done) return ctx.recent;

@@ -3,7 +3,7 @@
 //  - kind 'anthropic' → /v1/messages (Claude)
 // Las llamadas salen DIRECTAS del navegador del usuario al proveedor; la clave
 // no pasa por ningún servidor nuestro. Streaming SSE en ambos dialectos.
-import { packHistory } from '../context.js';
+import { packHistoryAsync } from '../context.js';
 
 let cfg = null;
 export let name = 'API';
@@ -28,7 +28,7 @@ async function openaiChat(history, system, onToken) {
   if (cfg.apiKey) headers.Authorization = 'Bearer ' + cfg.apiKey;
   const body = {
     model: cfg.model,
-    messages: [{ role: 'system', content: system }, ...packHistory(history, 3000)],
+    messages: [{ role: 'system', content: system }, ...await packHistoryAsync(history, 3000)],
     stream: true,
     max_tokens: cfg.maxTokens || 1024,
   };
@@ -66,7 +66,7 @@ async function anthropicChat(history, system, onToken) {
       max_tokens: cfg.maxTokens || 1024,
       system,
       stream: true,
-      messages: forAnthropic(packHistory(history, 3000)),
+      messages: forAnthropic(await packHistoryAsync(history, 3000)),
     }),
   });
   if (!res.ok || !res.body) throw new Error('HTTP ' + res.status + ' ' + (await res.text().catch(() => '')).slice(0, 120));
