@@ -37,3 +37,52 @@ clonar y abrir sin instalar nada.
 ## Licencia
 
 Apache License 2.0 — ver [LICENSE](LICENSE).
+
+## Cómo se mide el gestor de contexto
+
+No se elige por intuición. Todo a **igual presupuesto de tokens**.
+
+**Sesiones reales de agente** — 25 sesiones sobre proyectos reales, 174 sondas, recuerdo de hechos, sin juez LLM:
+
+| | recuerdo |
+|---|---|
+| truncar por la cola | 7,0 % |
+| versión anterior | 15,1 % |
+| **esta** | **65,3 % ± 8,5** |
+
+Y con el presupuesto barrido, porque una sola cifra engaña:
+
+| contexto ÷ presupuesto | truncar | versión anterior | esta |
+|---|---|---|---|
+| 15,8× *(agobio)* | 8,2 % | 13,2 % | **70,7 %** |
+| 5,9× | 15,7 % | 13,2 % | **73,2 %** |
+| 3,0× | 31,8 % | 13,2 % | **83,6 %** |
+| 1,5× *(casi cabe)* | 72,5 % | 13,2 % | **94,6 %** |
+
+La columna del medio no es un error: la versión anterior recuperaba **lo mismo con diez veces más sitio**, porque tiraba material antes de puntuarlo.
+
+**Memoria a largo plazo** — 200 preguntas, F1 del propio repo del banco, modelo real respondiendo, ~8 % del contexto:
+
+| | F1 |
+|---|---|
+| **el contexto COMPLETO, sin comprimir** | **22,56** |
+| truncar por la cola | 6,62 |
+| heurísticas escritas a mano | 6,07 |
+| BM25 sin IDF | 20,34 |
+| BM25 | 23,59 |
+| embeddings | 23,95 |
+| **fusión por rangos** | **28,09** |
+
+**Recuperar bien bate a tenerlo todo**: 28,09 contra 22,56 con el 8 % de los tokens. Lo irrelevante no es lastre neutro, distrae.
+
+### Lo que se midió y no se supuso
+- Activar las heurísticas costaba **−3,02 F1**. No es que no aportaran: restaban.
+- Quitar la IDF cuesta **−3,25 F1**. La rareza endógena hace trabajo real, y sustituye a cualquier lista de parada escrita a mano — en cualquier idioma.
+- Lo semántico **no sustituye** al léxico, le cubre el punto ciego: sin solape de vocabulario entre pregunta y respuesta ganan los embeddings (24,28 vs 18,60); con solape gana BM25 (29,33 vs 23,58); la fusión se queda con los dos.
+- El encargo original pasa de perderse **siempre** a conservarse **siempre** con una reserva de cabecera del 5 %.
+- Contenido obsoleto: sin control de caducidad, la versión **falsa** de un fichero editado sobrevivía **8/8**; con él, **0/8**.
+
+### Referencias
+BM25 — Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, *Okapi at TREC-3*, 1994; formulación moderna en Robertson & Zaragoza, FnTIR 3(4), 2009 · IDF — Spärck Jones, *Journal of Documentation* 28(1), 1972 · RRF — Cormack, Clarke & Buettcher, SIGIR 2009 · MMR — Carbonell & Goldstein, SIGIR 1998 · sumideros de atención — Xiao, Tian, Chen, Han & Lewis, ICLR 2024 · tiempo de validez — Snodgrass & Ahn, SIGMOD 1985.
+
+La historia completa, incluido lo que salió mal: **<https://bitacora.utopiaia.com/posts/16-beaten-by-doing-nothing.html>**
