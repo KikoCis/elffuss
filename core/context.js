@@ -237,9 +237,11 @@ export function packHistory(history, budgetTokens = 2200) {
  * troceado. Si no se pasa `embed`, o si falla, cae limpiamente a la vía léxica.
  *
  * Por qué fusionar y no sustituir: medido, BM25 y los embeddings EMPATAN
- * (0,598 vs 0,596) — lo semántico no es mejor, recupera cosas DISTINTAS. El
- * léxico acierta el identificador exacto; lo semántico, la paráfrasis. Juntos
- * suben a 0,706.
+ * en global, pero NO hacen el mismo trabajo. Partiendo las preguntas por solape
+ * de vocabulario con la respuesta: sin solape, embeddings 24,28 > BM25 18,60;
+ * con solape, BM25 29,33 > embeddings 23,58. La fusión por rangos se queda con
+ * los DOS (24,05 / 32,73). Lo semántico no sustituye al léxico: le cubre el
+ * punto ciego.
  */
 export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) {
   const { embed, block = 5, cache } = opts;
