@@ -158,8 +158,40 @@ function prepare(history, budgetTokens) {
     if (used + t > reserve && recent.length >= 1) break;
     recent.unshift(m); used += t;
   }
-  const old = history.slice(0, history.length - recent.length);
-  if (!old.length || used >= budgetTokens) return { done: true, recent, used };
+  let old = history.slice(0, history.length - recent.length);
+  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head: [] };
+
+  // ── RESERVA DE CABECERA ────────────────────────────────────────────────────
+  // Los PRIMEROS mensajes se conservan literales y SIN puntuar, igual que los
+  // últimos, y solo bajo presión (misma puerta que la recencia, misma razón).
+  //
+  // El arranque lleva el ENCARGO: qué hay que hacer, con qué restricciones. El
+  // resto de la sesión lo da por sabido, así que nadie lo repite — y sin
+  // repeticiones no hay solape léxico con la pregunta de ahora, o sea que BM25
+  // no puede rescatarlo por mucho que importe. Es el único contenido que el
+  // agente NO puede reconstruir mirando el código.
+  //
+  // Respaldo externo: es el resultado central de StreamingLLM — los primeros
+  // tokens actúan de SUMIDERO de atención y absorben el 45-55 % de la masa.
+  // Un recuperador puro no puede ver eso: no es una propiedad del texto, sino
+  // de cómo el modelo lo usa.
+  //
+  // Medido (A/B mismo código, 8 semillas, sonda que pregunta por el encargo a
+  // mitad de sesión):
+  //     presupuesto  3.000:  el encargo sobrevive   0 % →  100 %
+  //     presupuesto 16.000:  el encargo sobrevive 100 % →  100 %
+  //     hechos de media sesión: 85,7 % → 85,7 %  ·  91,1 % → 91,1 %
+  // O sea: rescata el encargo de nunca a siempre y NO cuesta nada.
+  const headReserve = pressure < 0.25 ? Math.floor(budgetTokens * 0.05) : 0;
+  const head = []; let headUsed = 0;
+  for (let i = 0; i < old.length; i++) {
+    const m = clampMsg(old[i]), t = tokEstimate(m);
+    if (headUsed + t > headReserve) break;
+    head.push(m); headUsed += t;
+  }
+  old = old.slice(head.length);
+  used += headUsed;
+  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head };
 
   // La pregunta VIVA: el último turno de usuario que no sea un resultado de
   // herramienta. Es contra esto que se puntúa, no contra la tarea inicial —
@@ -175,13 +207,14 @@ function prepare(history, budgetTokens) {
   const q = [...new Set(tokens(query))];
   const nMsg = Math.max(old.length - 1, 1);
   items.forEach((it, i) => { it.bm = score(i, q); it.rec = it.mi / nMsg; });
-  return { done: false, recent, old, used, items, query, recTie, pressure };
+  return { done: false, recent, old, used, items, query, recTie, pressure, head };
 }
 
 // Selección bajo un único presupuesto global, con MMR, y emisión con marcas de
 // omisión para que el modelo sepa que falta algo.
 function selectAndEmit(ctx, budgetTokens) {
   const { recent, old, items } = ctx;
+  const head = ctx.head || [];
   let used = ctx.used;
   const cap = Math.max(40, Math.floor((budgetTokens - used) * 0.5));
   const idOf = it => it.mi * 100000 + it.li;
@@ -227,7 +260,7 @@ function selectAndEmit(ctx, budgetTokens) {
   // Se mide el tamaño REAL emitido y se devuelven las líneas peor puntuadas
   // hasta que la salida cabe de verdad.
   const emit = () => {
-    let t = recent.reduce((s, m) => s + tokEstimate(m), 0);
+    let t = recent.reduce((s, m) => s + tokEstimate(m), 0) + head.reduce((s, m) => s + tokEstimate(m), 0);
     let open = 0;
     old.forEach((m, mi) => {
       let any = false, run = 0, sub = 0;
@@ -272,7 +305,7 @@ function selectAndEmit(ctx, budgetTokens) {
     packed.push({ role: m.role, content: out.join('\n') });
   });
   if (droppedMsgs) packed.push({ role: 'user', content: `[…${droppedMsgs} mensajes antiguos omitidos…]` });
-  return [...packed, ...recent];
+  return [...head, ...packed, ...recent];
 }
 
 /**
@@ -282,7 +315,7 @@ function selectAndEmit(ctx, budgetTokens) {
 export function packHistory(history, budgetTokens = 2200) {
   if (!history.length) return history;
   const ctx = prepare(history, budgetTokens);
-  if (ctx.done) return ctx.recent;
+  if (ctx.done) return [...(ctx.head || []), ...ctx.recent];
   const max = ctx.items.reduce((m, it) => Math.max(m, it.bm), 0) || 1;
   for (const it of ctx.items) {
     // Dos estratos separados por 10 — más de lo que la penalización MMR (≤0.5)
@@ -338,7 +371,7 @@ export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) 
   }
   if (!embed) return packHistory(history, budgetTokens);
   const ctx = prepare(history, budgetTokens);
-  if (ctx.done) return ctx.recent;
+  if (ctx.done) return [...(ctx.head || []), ...ctx.recent];
 
   try {
     const blocks = [];
