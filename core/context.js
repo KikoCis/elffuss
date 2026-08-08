@@ -143,6 +143,38 @@ function rrf(lists, k = RRF_K) {
   return out;
 }
 
+/**
+ * CADUCIDAD — el mismo problema que ya resolvimos en el vigilante de carpetas,
+ * un piso más arriba.
+ *
+ * El agente lee un fichero en el turno 3 y lo EDITA en el 20. BM25 recupera las
+ * dos versiones y la vieja puntúa igual de alto, porque comparte todo el
+ * vocabulario con la nueva. El modelo ve contenido obsoleto sin ninguna señal
+ * de que lo es — y eso no es ineficiencia, es INCORRECCIÓN: ninguna cantidad de
+ * relevancia arregla que el dato sea falso. Medido con una sonda leer→editar→
+ * releer (8 semillas): la versión FALSA sobrevivía 8/8; con esto, 0/8, y la
+ * verdadera sigue 8/8, sin coste en recall.
+ *
+ * El objetivo NO viene en el resultado: sale de la llamada del asistente
+ * anterior. Y se DEGRADA, no se borra: si alguien pregunta expresamente qué
+ * decía antes, sigue estando. «Esto ya no es cierto» y «esto no existió nunca»
+ * son afirmaciones distintas, y solo la primera es verdad.
+ */
+function markSuperseded(msgs) {
+  const lastFor = new Map(), targetOf = new Map();
+  for (let i = 0; i < msgs.length; i++) {
+    if (!(msgs[i].content || '').startsWith('[resultado')) continue;
+    const call = i > 0 ? (msgs[i - 1].content || '') : '';
+    const m = call.match(/"tool"\s*:\s*"([^"]+)"[\s\S]{0,200}?"(?:path|file|command)"\s*:\s*"([^"]+)"/);
+    if (!m) continue;
+    const key = m[1].split('.')[0] + ':' + m[2];
+    targetOf.set(i, key); lastFor.set(key, i);
+  }
+  const stale = new Set();
+  for (const [i, key] of targetOf) if (lastFor.get(key) !== i) stale.add(i);
+  return stale;
+}
+
 // Prepara el estado común: reserva de recientes, pregunta viva, líneas y BM25.
 function prepare(history, budgetTokens) {
   // PRESIÓN de compresión: qué fracción del historial cabe. Todas las perillas
@@ -231,9 +263,10 @@ function prepare(history, budgetTokens) {
   const query = [...history].reverse().find(m =>
     m.role === 'user' && !(m.content || '').startsWith('[resultado'))?.content || '';
 
+  const stale = markSuperseded(old);
   const items = [];
   old.forEach((m, mi) => (m.content || '').split('\n').forEach((line, li) =>
-    items.push({ mi, li, line, first: li === 0 })));
+    items.push({ mi, li, line, first: li === 0, stale: stale.has(mi) })));
 
   const score = buildBM25(items.map(it => it.line));
   const q = [...new Set(tokens(query))];
@@ -366,7 +399,7 @@ export function packHistory(history, budgetTokens = 2200) {
     // Dos estratos separados por 10 — más de lo que la penalización MMR (≤0.5)
     // puede recorrer, así que una línea sin relevancia NUNCA adelanta a una que
     // sí la tiene. Dentro de cada estrato: BM25 arriba, desempate abajo.
-    it.score = it.bm > 0 ? 10 + it.bm / max : (ctx.recTie ? it.rec : 0);
+    it.score = (it.bm > 0 && !it.stale) ? 10 + it.bm / max : (ctx.recTie ? it.rec : 0);
     if (it.first) it.score = Math.max(it.score, 0.5);   // cabecera de procedencia
   }
   return selectAndEmit(ctx, budgetTokens);
@@ -437,7 +470,7 @@ export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) 
     const fused = rrf([byLex, bySem]);
     const max = Math.max(...fused.values()) || 1;
     for (const it of ctx.items) {
-      const rel = it.bm > 0 || (it.sem || 0) > 0;
+      const rel = !it.stale && (it.bm > 0 || (it.sem || 0) > 0);
       it.score = rel ? 10 + (fused.get(idOf(it)) || 0) / max : (ctx.recTie ? it.rec : 0);
       if (it.first) it.score = Math.max(it.score, 0.5);
     }
