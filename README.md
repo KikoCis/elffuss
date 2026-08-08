@@ -15,7 +15,7 @@ ES modules vanilla, sin dependencias, sin build:
 
 | Módulo | Qué hace |
 |---|---|
-| `context.js` | **ACE-lite**: gestión de contexto por relevancia (BM25-lite + IDF) con presupuesto de tokens y tope por mensaje. Evita el «Too many tokens». |
+| `context.js` | **Selección de contexto por relevancia** frente a la pregunta viva: BM25 real (saturación + normalización por longitud) con **IDF endógena** —sin lista de parada, funciona en cualquier idioma—, granularidad de línea, control de redundancia y presupuesto de tokens garantizado. Las perillas salen de la presión de compresión medida, no de constantes. Opcionalmente fusiona una segunda opinión semántica por rangos. Medido: recall de hechos **15,1 % → 65,3 %** con el mismo gasto. |
 | `skills.js` | **Skills de Claude Code**: instala SKILL.md desde `anthropics/skills`, `claude-plugins-official` o cualquier repo público; se inyectan al system prompt. |
 | `md.js` | Renderizador de markdown seguro (escape total) para el chat, estilo plugin de Claude Code. |
 | `splash-gl.js` | Galaxia de partículas WebGL (GL_POINTS + blending aditivo, todo en el vertex shader) para las pantallas de bienvenida. |

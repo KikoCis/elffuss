@@ -40,16 +40,27 @@ const RECENT = 6;
 // La reserva de recientes ya no es constante: sale de la presión medida (ver
 // prepare). Sin tope, un solo resultado enorme se come el presupuesto entero.
 const MAX_MSG_CHARS = 12000;
-const MMR_LAMBDA = 0.5;        // penalización por parecerse a lo ya elegido
-const MMR_CAND = 600;
+// λ y nº de candidatos NO son constantes: ver measureRedundancy() y
+// selectAndEmit(). Un λ fijo destruye información buena cuando el material no
+// es redundante, y 600 candidatos fijos dejan sin mirar la mayor parte del
+// historial en cuanto el presupuesto es grande — que es el caso real.
 const RRF_K = 60;
 
 // Sin lista de parada: de eso se encarga la IDF. Se admiten tokens de 2
 // caracteres porque en código los identificadores cortos a veces son justo
 // lo que se busca (`fs`, `db`, `id`).
 const tokens = s => ((s || '').toLowerCase().match(/[a-záéíóúñü_][\wáéíóúñü./-]{1,}|\d{2,}/g) || []);
-const tokEstimate = m => Math.ceil((m.content || '').length / 4) + 4;
-const estTok = s => Math.ceil((s || '').length / 4);
+// Estimador de tokens. `longitud/4` sirve para prosa pero SUBESTIMA mucho el
+// código: la puntuación densa (`{`, `=>`, `.`, `(`) son tokens de un carácter.
+// Medido, contar solo por longitud hacía que el empaquetador creyera que cabía
+// y se pasara ~1,5× del presupuesto — es decir, el «Too many tokens» que este
+// fichero existe para evitar. Se toma el MAYOR de las dos estimaciones.
+const estTok = s => {
+  if (!s) return 0;
+  const pieces = (s.match(/\w+|[^\w\s]/g) || []).length;
+  return Math.max(Math.ceil(pieces * 1.25), Math.ceil(s.length / 4));
+};
+const tokEstimate = m => estTok(m.content) + 4;
 
 function clampMsg(m) {
   const c = m.content || '';
@@ -88,6 +99,20 @@ function buildBM25(docs, k1 = 1.2, b = 0.75) {
 }
 
 const simTokens = s => new Set(((s || '').toLowerCase().match(/[a-z0-9_./-]{2,}/g) || []));
+
+// Redundancia REAL del material, muestreada. Un historial de resultados de
+// herramienta casi idénticos pide penalizar fuerte; una conversación donde cada
+// línea es distinta, casi nada — y ahí un λ alto solo tira información buena.
+function measureRedundancy(items, sample = 240) {
+  if (items.length < 4) return 0;
+  const step = Math.max(1, Math.floor(items.length / sample));
+  const picked = [];
+  for (let i = 0; i < items.length; i += step) picked.push(simTokens(items[i].line));
+  let sum = 0, pairs = 0;
+  for (let i = 0; i < picked.length; i++)
+    for (let j = i + 1; j < Math.min(i + 8, picked.length); j++) { sum += jaccard(picked[i], picked[j]); pairs++; }
+  return pairs ? sum / pairs : 0;
+}
 function jaccard(a, b) {
   if (!a.size || !b.size) return 0;
   let inter = 0; const [small, big] = a.size <= b.size ? [a, b] : [b, a];
@@ -167,7 +192,9 @@ function selectAndEmit(ctx, budgetTokens) {
 
   // MMR: al elegir, penalizar el parecido con lo ya elegido. Es lo único que
   // mide por encima de BM25 a secas (+8,9 puntos).
-  const cand = pool.slice(0, MMR_CAND);
+  const lambda = Math.max(0.15, Math.min(0.8, 2 * measureRedundancy(pool)));
+  const nCand = Math.max(400, Math.min(8000, Math.round(budgetTokens / 6)));
+  const cand = pool.slice(0, nCand);
   const tok = new Map(cand.map(it => [idOf(it), simTokens(it.line)]));
   const maxSim = new Map(cand.map(it => [idOf(it), 0]));
   const byId = new Map(cand.map(it => [idOf(it), it]));
@@ -175,7 +202,7 @@ function selectAndEmit(ctx, budgetTokens) {
   while (remaining.size && used < budgetTokens) {
     let best = null, bestVal = -Infinity;
     for (const id of remaining) {
-      const v = byId.get(id).score - MMR_LAMBDA * maxSim.get(id);
+      const v = byId.get(id).score - lambda * maxSim.get(id);
       if (v > bestVal) { bestVal = v; best = id; }
     }
     remaining.delete(best);
@@ -192,6 +219,44 @@ function selectAndEmit(ctx, budgetTokens) {
     keep.add(id); used += c;
   }
 
+  // ── CONTRATO DE PRESUPUESTO ────────────────────────────────────────────────
+  // El coste por línea ignora la sobrecarga por mensaje y las marcas de omisión,
+  // así que la suma de costes NO es lo que se emite. Sin esta corrección el
+  // empaquetador se pasa ~1,6-1,8× de lo que se le pide — medido — y eso es
+  // precisamente el «Too many tokens» que este fichero existe para evitar.
+  // Se mide el tamaño REAL emitido y se devuelven las líneas peor puntuadas
+  // hasta que la salida cabe de verdad.
+  const emit = () => {
+    let t = recent.reduce((s, m) => s + tokEstimate(m), 0);
+    let open = 0;
+    old.forEach((m, mi) => {
+      let any = false, run = 0, sub = 0;
+      (m.content || '').split('\n').forEach((line, li) => {
+        if (keep.has(mi * 100000 + li)) {
+          if (run) { sub += 8; run = 0; }
+          sub += Math.min(estTok(line), cap); any = true;
+        } else run++;
+      });
+      if (any) { if (run) sub += 8; t += sub + 4; open++; }
+    });
+    if (open < old.length) t += 12;
+    return t;
+  };
+  let realized = emit();
+  if (realized > budgetTokens) {
+    const kept = items.filter(it => keep.has(idOf(it))).sort((a, b) => a.score - b.score);
+    let p = 0;
+    while (realized > budgetTokens && p < kept.length) {
+      const over = realized - budgetTokens; let freed = 0;
+      while (p < kept.length && freed < over) {
+        const it = kept[p++];
+        keep.delete(idOf(it));
+        freed += Math.min(estTok(it.line), cap);
+      }
+      realized = emit();
+    }
+  }
+
   const packed = [];
   let droppedMsgs = 0;
   old.forEach((m, mi) => {
@@ -199,7 +264,7 @@ function selectAndEmit(ctx, budgetTokens) {
     (m.content || '').split('\n').forEach((line, li) => {
       if (keep.has(mi * 100000 + li)) {
         if (skipped) { out.push(`  […${skipped} líneas omitidas…]`); skipped = 0; }
-        out.push(line.length > cap * 4 ? line.slice(0, cap * 4) + ' …' : line);
+        out.push(estTok(line) > cap ? line.slice(0, cap * 3) + ' …' : line);
       } else skipped++;
     });
     if (skipped && out.length) out.push(`  […${skipped} líneas omitidas…]`);
