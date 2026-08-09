@@ -1,14 +1,14 @@
-// Skills de Elffuss Code: instrucciones en markdown (formato SKILL.md de
-// Claude Code) que el modelo sigue cuando aplican. Se instalan desde el
-// catálogo grande OFICIAL (github.com/anthropics/skills), desde los plugins
-// oficiales, o desde CUALQUIER repo público (marketplaces de la comunidad
-// tipo OpenClaude/openclaw). Todo transparente: se ve el repo, la lista y el
-// SKILL.md que se inyecta. Se guardan en IndexedDB (nada sale del navegador).
+// Elffuss Code skills: markdown instructions (Claude Code's SKILL.md format)
+// that the model follows when they apply. They install from the big OFFICIAL
+// catalogue (github.com/anthropics/skills), from the official plugins, or from
+// ANY public repo (community marketplaces such as OpenClaude/openclaw).
+// Everything is transparent: you see the repo, the list, and the SKILL.md that
+// gets injected. They are stored in IndexedDB (nothing leaves the browser).
 import * as db from './db.js';
 
-const KEY = 'skills';          // skills instaladas
-const SRC_KEY = 'skills.sources'; // repos personalizados añadidos por el usuario
-const MAX_SKILL = 12_000;      // caracteres del cuerpo que se inyectan al modelo
+const KEY = 'skills';          // installed skills
+const SRC_KEY = 'skills.sources'; // custom repos added by the user
+const MAX_SKILL = 12_000;      // characters of the body injected into the model
 
 export const CATALOG_REPO = 'anthropics/skills';
 export const DEFAULT_SOURCES = [
@@ -17,7 +17,7 @@ export const DEFAULT_SOURCES = [
   { repo: 'anthropics/claude-plugins-official', label: 'Anthropic · Claude Code Plugins (oficial)', official: true },
 ];
 
-let cache = []; // instaladas, en memoria (para que el systemPrompt sea síncrono)
+let cache = []; // installed, in memory (so that systemPrompt can be synchronous)
 
 export async function initSkills() {
   cache = (await db.get('kv', KEY).catch(() => null)) || [];
@@ -33,10 +33,11 @@ export async function install(skill) {
   const entry = { ...skill, content: (skill.content || '').slice(0, MAX_SKILL) };
   cache.push(entry);
   await db.set('kv', KEY, cache);
-  return entry;                       // devuelve la skill completa (name, description…)
+  return entry;                       // returns the full skill (name, description…)
 }
 
-// Mensaje «cómo usarla» tras instalar: qué hace + un ejemplo de qué pedir.
+// "How to use it" message after installing: what it does + an example of what
+// to ask for. The returned copy is user-facing and stays in Spanish.
 export function usageMessage(skill) {
   const desc = (skill.description || '').trim();
   const ejemplo = firstExample(skill) || `algo relacionado con «${skill.name}»`;
@@ -45,7 +46,7 @@ export function usageMessage(skill) {
     `Ya la sigo en cada conversación. Para usarla, pídeme por ejemplo:\n\n> ${ejemplo}`;
 }
 
-// Intenta sacar un ejemplo de uso del cuerpo del SKILL.md (líneas de ejemplo/uso).
+// Tries to pull a usage example out of the SKILL.md body (example/usage lines).
 function firstExample(skill) {
   const body = skill.content || '';
   const m = body.match(/(?:ejemplo|example|uso|usage|prueba|try)[^\n:]*[:：]\s*["“]?([^\n"”]{6,90})/i)
@@ -62,7 +63,7 @@ export async function get(name) {
   return cache.find(s => s.name.toLowerCase() === String(name).toLowerCase()) || null;
 }
 
-// ---- fuentes (repos) ----
+// ---- sources (repos) ----
 export async function sources() {
   const custom = (await db.get('kv', SRC_KEY).catch(() => null)) || [];
   return [...DEFAULT_SOURCES, ...custom];
@@ -81,8 +82,8 @@ export async function removeSource(repo) {
   await db.set('kv', SRC_KEY, custom.filter(s => s.repo !== repo));
 }
 
-// ---- catálogo desde GitHub ----
-// Una sola llamada al árbol git del repo → todos los SKILL.md.
+// ---- catalogue from GitHub ----
+// A single call to the repo's git tree → every SKILL.md.
 export async function listFromRepo(repo) {
   let tree, branch;
   for (const b of ['main', 'master']) {
@@ -97,7 +98,7 @@ export async function listFromRepo(repo) {
     .sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
-// Descarga el SKILL.md y lo instala (frontmatter YAML simple).
+// Downloads the SKILL.md and installs it (simple YAML frontmatter).
 export async function installFromRepo(entry) {
   let md = null;
   for (const b of [entry.branch, 'main', 'master'].filter(Boolean)) {
@@ -119,9 +120,9 @@ export function parseSkill(md, fallbackName = 'skill') {
   return { name, description, content };
 }
 
-// Creador de skills: Elffuss fabrica una skill propia (SKILL.md) a partir de
-// lo que el usuario quiere, y la instala al instante. Aparece en la pestaña
-// Skills y se inyecta en el prompt de los siguientes turnos.
+// Skill maker: Elffuss builds a skill of its own (SKILL.md) out of whatever the
+// user wants, and installs it instantly. It shows up in the Skills tab and is
+// injected into the prompt of the following turns.
 export async function createSkill({ name, description, instructions } = {}) {
   if (!name || !instructions) throw new Error('Faltan name o instructions');
   const skill = {
@@ -135,7 +136,8 @@ export async function createSkill({ name, description, instructions } = {}) {
   return `Skill «${skill.name}» creada e instalada. Ya la sigo en cada conversación (mírala en la pestaña Skills).`;
 }
 
-// Bloque para el systemPrompt (síncrono, desde la caché).
+// Block for the systemPrompt (synchronous, straight from the cache). The
+// injected wording is prompt content, not documentation: it stays in Spanish.
 export function skillsPromptBlock() {
   if (!cache.length) return '';
   const parts = cache.map(s =>

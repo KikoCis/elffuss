@@ -1,28 +1,29 @@
-// Cerebro CEO autónomo (compartido por Elffuss Code y Elffuss Claw): cuando el
-// usuario NO está pidiendo nada (ocioso) y hay un modelo local cargado, la elfa
-// «trabaja por su cuenta» — revisa el espacio de trabajo, reparte el trabajo en
-// varios perfiles que piensan EN PARALELO (cada uno una línea de pensamiento en
-// la vista Mente) y sintetiza propuestas de mejora.
+// Autonomous CEO brain (shared by Elffuss Code and Elffuss Claw): when the user
+// is NOT asking for anything (idle) and a local model is loaded, the elf "works
+// on her own" — she surveys the workspace, splits the work across several
+// profiles that think IN PARALLEL (each one a line of thought in the Mind view)
+// and synthesises improvement proposals.
 //
-// Agnóstico de herramientas a propósito: cada app inyecta su propio adaptador
-// de workspace (`init({ workspace, ... })`) — Code usa code.js (proyecto de
-// código), Claw usa fs.js (carpetas con permiso). El core no sabe ni le importa
-// cuál es.
+// Deliberately tool-agnostic: each app injects its own workspace adapter
+// (`init({ workspace, ... })`) — Code uses code.js (a code project), Claw uses
+// fs.js (folders with permission). The core neither knows nor cares which.
 //
-// Seguridad: NO modifica tus ficheros. Deja las propuestas en una carpeta
-// aditiva (nunca toca lo existente) y las hace «flotar» en la Mente. Se PARA en
-// cuanto detecta actividad del usuario y reanuda al volver a estar ocioso.
+// Safety: it does NOT modify your files. It leaves the proposals in an additive
+// folder (it never touches what already exists) and makes them "float" in the
+// Mind. It STOPS the moment it detects user activity and resumes once things
+// are idle again.
 import { Agent } from './agent.js';
 import { humanizeTool } from './humanize.js';
 
-const IDLE_MS = 18000;       // 18 s sin actividad → el CEO se pone a trabajar
-const TICK_MS = 3000;        // frecuencia de comprobación
-// 5 min entre ciclos automáticos: con 45s, una tarde ociosa generaba MILES de
-// ficheros. «Pensar ahora» (forceCycle) sigue disponible sin esperar esto.
+const IDLE_MS = 18000;       // no activity for this long → the CEO starts working
+const TICK_MS = 3000;        // how often we check
+// Five minutes between automatic cycles: on a much shorter cooldown, one idle
+// afternoon generated THOUSANDS of files. "Think now" (forceCycle) is still
+// available without waiting for this.
 const COOLDOWN_MS = 300000;
-const SOUL_CAP = 25;          // ficheros sueltos antes de consolidar en archivo.md
+const SOUL_CAP = 25;          // loose files before consolidating into archivo.md
 
-// perfil por defecto si la app anfitriona no da los suyos
+// default profile if the host app does not supply its own
 const GENERIC_PROFILES = [
   { id: 'p1', name: 'Revisión', focus: 'qué mejorar de forma concreta y accionable', color: '#7c5cff' },
   { id: 'p2', name: 'Calidad', focus: 'errores, casos borde, cosas que podrían fallar', color: '#49e8ff' },
@@ -31,11 +32,11 @@ const GENERIC_PROFILES = [
 const slug = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 24) || 'perfil';
 
-// ── namespace (localStorage) y adaptador de workspace: los da la app anfitriona ──
-let NS = 'elffuss';           // prefijo de las claves de localStorage
+// ── namespace (localStorage) and workspace adapter: supplied by the host app ──
+let NS = 'elffuss';           // prefix for the localStorage keys
 let ws = null;                // { isReady, tree, write, read, list, remove }
 let getProvider = () => null;
-let isBusy = () => false;     // ¿el usuario tiene trabajo en cola/procesándose? → prioridad
+let isBusy = () => false;     // does the user have work queued/in flight? → priority
 let defaultProfiles = GENERIC_PROFILES;
 const K = suffix => NS + '.' + suffix;
 
@@ -61,8 +62,8 @@ export function setProfiles(list) {
 
 let enabled = false, running = false, lastActivity = Date.now(), timer = null, lastCycleEnd = 0, cycleN = 0;
 
-// MISIÓN reprogramable: el usuario puede reorientar el cerebro desde la Mente
-// («céntrate en seguridad», «optimiza mis Excel», «documenta todo»…).
+// Reprogrammable MISSION: the user can re-aim the brain from the Mind view
+// ("focus on security", "optimise my spreadsheets", "document everything"…).
 let DEFAULT_MISSION = 'Revisar el espacio de trabajo y proponer mejoras concretas y accionables.';
 let mission = null;
 function ensureMission() { if (mission == null) { try { mission = localStorage.getItem(K('ceoMission')) || DEFAULT_MISSION; } catch { mission = DEFAULT_MISSION; } } }
@@ -71,11 +72,11 @@ export function setMission(text) {
   mission = (text || '').trim() || DEFAULT_MISSION;
   try { localStorage.setItem(K('ceoMission'), mission); } catch { /* */ }
   emit('ceo', { type: 'reprogram', text: 'Nueva misión recibida: ' + mission });
-  lastCycleEnd = 0; lastActivity = Date.now() - IDLE_MS; // que arranque un ciclo pronto con la nueva misión
+  lastCycleEnd = 0; lastActivity = Date.now() - IDLE_MS; // start a cycle soon with the new mission
   return mission;
 }
 
-// Carpeta-«alma» donde el cerebro crea y guarda TODO (configurable).
+// "Soul" folder where the brain creates and stores EVERYTHING (configurable).
 let DEFAULT_SOUL = '.elffuss/soul';
 let soulDir = null;
 function ensureSoulDir() { if (soulDir == null) { try { soulDir = localStorage.getItem(K('ceoDir')) || DEFAULT_SOUL; } catch { soulDir = DEFAULT_SOUL; } } }
@@ -87,10 +88,10 @@ export function setSoulDir(dir) {
   return soulDir;
 }
 
-// ── semáforo cross-pestaña: UN SOLO cerebro ejecuta, TODAS visualizan ───────
-// El líder tiene un Web Lock exclusivo (se libera solo al cerrar la pestaña);
-// difunde sus pensamientos por BroadcastChannel para que el resto los vea.
-// (Aislado por origen por el propio navegador: Code y Claw nunca se cruzan.)
+// ── cross-tab semaphore: ONE brain runs, ALL tabs display ──────────────────
+// The leader holds an exclusive Web Lock (released on its own when the tab is
+// closed); it broadcasts its thoughts over BroadcastChannel so the rest can see
+// them. (Isolated per origin by the browser itself: Code and Claw never cross.)
 let isLeader = false, bc = null, realEmit = () => {}, crossTabWired = false;
 function initCrossTab() {
   if (crossTabWired) return;
@@ -98,7 +99,7 @@ function initCrossTab() {
   try {
     bc = new BroadcastChannel(NS + '-ceo');
     bc.onmessage = e => { if (e.data && e.data.kind === 'thought') realEmit(e.data.channel, e.data.ev); };
-  } catch { /* sin BroadcastChannel */ }
+  } catch { /* no BroadcastChannel */ }
   if (navigator.locks && navigator.locks.request) {
     navigator.locks.request(NS + '-ceo-leader', { mode: 'exclusive' }, () => new Promise(() => { isLeader = true; }))
       .catch(() => { isLeader = true; });
@@ -106,7 +107,7 @@ function initCrossTab() {
 }
 function emit(channel, ev) {
   realEmit(channel, ev);
-  try { bc && bc.postMessage({ kind: 'thought', channel, ev }); } catch { /* ev no serializable */ }
+  try { bc && bc.postMessage({ kind: 'thought', channel, ev }); } catch { /* ev not serialisable */ }
 }
 
 // init({ workspace, provider, onEvent, isBusy, namespace, defaultProfiles, defaultMission, defaultSoulDir })
@@ -125,12 +126,12 @@ export function isThisTabLeader() { return isLeader; }
 export function noteActivity() { lastActivity = Date.now(); if (running) running = 'interrupt'; }
 export function isEnabled() { return enabled; }
 export function isRunning() { return !!running; }
-// Play/stop: persistido AQUÍ (fuente única) — cualquier botón que lo toque
-// queda sincronizado, y la elección sobrevive a recargar la página.
+// Play/stop: persisted HERE (single source) — any button that touches it stays
+// in sync, and the choice survives a page reload.
 export function wasEnabledLastSession() { try { return localStorage.getItem(K('ceoEnabled')) === '1'; } catch { return false; } }
-// ¿el usuario llegó a decidir alguna vez (play o stop)? Distingue «nunca lo
-// tocó» de «lo pausó a propósito» — solo lo primero debe auto-activarse al
-// abrir la Mente; lo segundo hay que RESPETARLO, no pisarlo.
+// did the user ever actually decide (play or stop)? This tells "never touched
+// it" apart from "paused it on purpose" — only the first should auto-enable
+// when the Mind is opened; the second must be RESPECTED, not overridden.
 export function hasDecided() { try { return localStorage.getItem(K('ceoEnabled')) != null; } catch { return false; } }
 export function enable() {
   if (enabled) return;
@@ -146,12 +147,12 @@ export function disable() {
 
 function schedule() { if (timer) clearTimeout(timer); timer = setTimeout(tick, TICK_MS); }
 
-// «Pensar ahora» — salta la espera de ociosidad. Sigue respetando el
-// semáforo: si otra pestaña es la líder, no compite por la GPU.
+// "Think now" — skips the idle wait. It still respects the semaphore: if
+// another tab is the leader, it does not compete for the accelerator.
 export async function forceCycle() {
   if (!isLeader) { emit('ceo', { type: 'paused', text: 'Otra pestaña lleva el cerebro — ábrela ahí para forzar un ciclo.' }); return false; }
   if (running) return false;
-  // isReady() puede ser síncrona (Code: handle en memoria) o async (Claw: consulta IndexedDB) — se espera siempre.
+  // isReady() may be sync (Code: handle in memory) or async (Claw: queries IndexedDB) — always awaited.
   if (!(await ws?.isReady()) || !getProvider()) { emit('ceo', { type: 'paused', text: 'Necesito un espacio de trabajo abierto y un modelo cargado.' }); return false; }
   try { await runCycle(); } finally { lastCycleEnd = Date.now(); }
   return true;
@@ -163,15 +164,15 @@ async function tick() {
   const rested = Date.now() - lastCycleEnd > COOLDOWN_MS;
   const mightRun = isLeader && !running && !isBusy() && idle >= IDLE_MS && rested && getProvider();
   if (mightRun && await ws?.isReady()) {
-    try { await runCycle(); } catch { /* siguiente ciclo */ }
+    try { await runCycle(); } catch { /* next cycle */ }
     lastCycleEnd = Date.now();
   }
   schedule();
 }
 
-// helper: corre el agente con el proveedor actual sobre un prompt, emitiendo
-// tokens/herramientas a un canal. Devuelve el texto final. Las tool-calls pasan
-// SIEMPRE por el mismo runTool que usa el chat normal (Agent.handle real).
+// helper: runs the agent with the current provider over a prompt, emitting
+// tokens/tools to a channel. Returns the final text. Tool calls ALWAYS go
+// through the same runTool the normal chat uses (the real Agent.handle).
 async function think(channel, task) {
   const prov = getProvider();
   if (!prov) return '';
@@ -193,7 +194,7 @@ async function runCycle() {
   emit('ceo', { type: 'cycle', n: cycleN, text: 'Nuevo ciclo: reviso el espacio de trabajo y reparto el trabajo…' });
 
   let tree = '';
-  try { tree = await ws.tree({ depth: 2 }); } catch { /* sin workspace */ }
+  try { tree = await ws.tree({ depth: 2 }); } catch { /* no workspace */ }
   emit('ceo', { type: 'survey', text: 'Panorama captado (' + tree.split('\n').length + ' entradas). Delegando…' });
 
   const brief = (d) => `MISIÓN del equipo (fijada por el usuario): ${getMission()}\n` +
@@ -225,14 +226,14 @@ async function runCycle() {
   running = false;
 }
 
-// Rotación: si hay demasiados ficheros sueltos, los MÁS ANTIGUOS se consolidan
-// (recopilan) en un único archivo.md y se borran — para no acabar con miles.
+// Rotation: if there are too many loose files, the OLDEST ones are consolidated
+// into a single archivo.md and deleted — so we do not end up with thousands.
 async function rotateSoul() {
   try {
     const soul = getSoulDir();
     const names = (await ws.list(soul)).filter(n => n.endsWith('.md') && n !== 'archivo.md');
     if (names.length < SOUL_CAP) return;
-    names.sort(); // el nombre empieza por fecha → orden cronológico
+    names.sort(); // the name starts with the date → chronological order
     const excess = names.slice(0, names.length - SOUL_CAP + 1);
     let archive = ''; try { archive = await ws.read({ path: `${soul}/archivo.md` }); } catch { archive = '# Archivo histórico del cerebro\n'; }
     for (const name of excess) {
@@ -241,5 +242,5 @@ async function rotateSoul() {
     await ws.write({ path: `${soul}/archivo.md`, content: archive.slice(-80000) });
     for (const name of excess) { try { await ws.remove(soul, name); } catch { /* */ } }
     emit('ceo', { type: 'reprogram', text: `Consolidé ${excess.length} propuestas antiguas en archivo.md` });
-  } catch { /* soulDir aún sin crear o sin permiso: nada que rotar */ }
+  } catch { /* soulDir not created yet, or no permission: nothing to rotate */ }
 }

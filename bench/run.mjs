@@ -1,32 +1,32 @@
 #!/usr/bin/env node
 /**
- * Banco de recuerdo de hechos para empaquetadores de contexto.
+ * Fact-recall benchmark for context packers.
  *
- * QUÉ MIDE, y por qué está hecho así:
+ * WHAT IT MEASURES, and why it is built this way:
  *
- * Se generan sesiones de agente sobre un proyecto REAL — cada resultado de
- * herramienta es la salida auténtica de leer, listar o buscar en ficheros de
- * verdad, no texto sintético. A mitad de sesión el agente leyó una definición.
- * Al final se le pregunta por ella. La única pregunta del banco es:
+ * Agent sessions are generated over a REAL project — every tool result is the
+ * genuine output of reading, listing or searching real files, not synthetic
+ * text. Halfway through the session the agent read a definition. At the end it
+ * is asked about it. The benchmark's only question is:
  *
- *     ¿sigue esa definición dentro del contexto empaquetado?
+ *     is that definition still inside the packed context?
  *
- * NO hay modelo juzgando. Es una comprobación de presencia, determinista y
- * reproducible. Eso importa más de lo que parece: puntuando las MISMAS
- * respuestas, tres jueces distintos nos dieron 0 %, ~100 % y algo medible,
- * según el modelo y el prompt. Un banco cuyo resultado depende de qué juez
- * elijas no sirve para decidir entre dos empaquetadores.
+ * There is NO model judging. It is a presence check: deterministic and
+ * reproducible. That matters more than it looks: scoring the SAME answers,
+ * three different judges gave us 0%, ~100% and something measurable, depending
+ * on the model and the prompt. A benchmark whose result depends on which judge
+ * you pick is no use for deciding between two packers.
  *
- * Todas las condiciones reciben el MISMO presupuesto de tokens. Lo que cambia
- * es únicamente la política de selección.
+ * Every condition gets the SAME token budget. The only thing that changes is
+ * the selection policy.
  *
- * USO
- *   node run.mjs --root <ruta-de-un-repo> [--ext .js] [--budget 3000]
- *                [--seeds 8] [--packer <fichero.js>]
+ * USAGE
+ *   node run.mjs --root <path-to-a-repo> [--ext .js] [--budget 3000]
+ *                [--seeds 8] [--packer <file.js>]
  *
- * --packer debe exportar `packHistory(history, budgetTokens)`. Por defecto usa
- * el core de este mismo repositorio, así que los números del README se
- * reproducen sin configurar nada.
+ * --packer must export `packHistory(history, budgetTokens)`. By default it uses
+ * this repository's own core, so the README numbers reproduce with nothing to
+ * configure.
  */
 import { createRequire } from 'module';
 import path from 'path';
@@ -44,13 +44,14 @@ const SEEDS  = parseInt(arg('seeds', '8'), 10);
 const PACKER = path.resolve(arg('packer', path.join(HERE, '..', 'core', 'context.js')));
 
 if (!ROOT) {
-  console.error('falta --root <ruta-de-un-repo>.  Ej: node run.mjs --root ../core --ext .js');
+  console.error('missing --root <path-to-a-repo>.  E.g.: node run.mjs --root ../core --ext .js');
   process.exit(2);
 }
 
-// El core lee banderas de localStorage, que en Node no existe. Se le da un
-// sustituto vacío: así el banco mide el comportamiento POR DEFECTO, que es lo
-// que hay que medir — no una configuración que alguien dejó puesta.
+// The core reads flags from localStorage, which does not exist in Node. It is
+// given an empty stand-in: that way the benchmark measures the DEFAULT
+// behaviour, which is what has to be measured — not some configuration
+// somebody left switched on.
 if (typeof globalThis.localStorage === 'undefined') {
   const mem = new Map();
   globalThis.localStorage = {
@@ -63,9 +64,9 @@ if (typeof globalThis.localStorage === 'undefined') {
 const { packHistory } = await import('file://' + PACKER);
 const estTok = s => Math.ceil((s || '').length / 4) + 4;
 
-// CONDICIONES. `tail` es el listón que hay que batir: quedarse los últimos
-// mensajes hasta llenar el presupuesto y tirar el resto. Si un empaquetador no
-// le gana a esto, todo lo demás que midas de él da igual.
+// CONDITIONS. `tail` is the bar that has to be cleared: keep the last messages
+// until the budget is full and throw away the rest. If a packer does not beat
+// this, everything else you measure about it is beside the point.
 const tail = (history, budget) => {
   const out = []; let used = 0;
   for (let i = history.length - 1; i >= 0; i--) {
@@ -102,10 +103,10 @@ for (let seed = 1; seed <= SEEDS; seed++) {
   }
 }
 
-console.log(`\n  ${ROOT}  ·  ${sessions} sesiones  ·  presupuesto ${BUDGET} tokens\n`);
-console.log(`  ${'condición'.padEnd(12)}${'recuerdo'.padStart(10)}${'tokens'.padStart(10)}`);
+console.log(`\n  ${ROOT}  ·  ${sessions} sessions  ·  budget ${BUDGET} tokens\n`);
+console.log(`  ${'condition'.padEnd(12)}${'recall'.padStart(10)}${'tokens'.padStart(10)}`);
 for (const [name, a] of Object.entries(acc)) {
   if (!a.n) continue;
   console.log(`  ${name.padEnd(12)}${(100 * a.hit / a.n).toFixed(1).padStart(9)}%${Math.round(a.tok / a.n).toString().padStart(10)}`);
 }
-console.log(`\n  n = ${acc.packer.n} sondas\n`);
+console.log(`\n  n = ${acc.packer.n} probes\n`);

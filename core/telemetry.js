@@ -1,14 +1,14 @@
-// Buzón opt-in de errores/feedback. Apagado por defecto — la promesa de
-// «nada sale de tu máquina» sigue siendo cierta salvo que el usuario decida
-// lo contrario en Ajustes. Cuando está activo:
-//   - errores no capturados (window.onerror / unhandledrejection) y los
-//     puntos concretos del código que llaman a reportError() se mandan a
-//     /proxy/report (mismo origen, vía el proxy compartido de Elffuss)
-//   - sendFeedback() manda texto libre que el usuario escriba a propósito
-// Nunca se manda código ni contenido del proyecto — solo el mensaje técnico,
-// la pila, la URL y el user-agent. Sin cola ni reintentos: si el envío
-// falla, se descarta sin más (evita que un fallo de red se convierta en
-// almacenamiento sin límite).
+// Opt-in error/feedback mailbox. Off by default — the promise that "nothing
+// leaves your machine" stays true unless the user decides otherwise in
+// Settings. When it is on:
+//   - uncaught errors (window.onerror / unhandledrejection) and the specific
+//     places in the code that call reportError() are sent to /proxy/report
+//     (same origin, through the shared Elffuss proxy)
+//   - sendFeedback() sends free text the user deliberately wrote
+// Code and project content are NEVER sent — only the technical message, the
+// stack, the URL and the user agent. No queue and no retries: if the send
+// fails it is simply dropped (this keeps a network failure from turning into
+// unbounded storage).
 let appName = 'elffuss';
 let enabled = false;
 let hooked = false;
@@ -19,7 +19,7 @@ export function isEnabled() { return enabled; }
 
 export function setEnabled(v) {
   enabled = !!v;
-  try { localStorage.setItem(storageKey(), enabled ? '1' : '0'); } catch { /* localStorage lleno/bloqueado */ }
+  try { localStorage.setItem(storageKey(), enabled ? '1' : '0'); } catch { /* localStorage full/blocked */ }
   if (enabled) hookGlobalErrors();
 }
 
@@ -36,7 +36,7 @@ async function post(kind, message, opts = {}) {
         extra: String(opts.extra || '').slice(0, 2000),
       }),
     });
-  } catch { /* sin conexión o proxy caído: se descarta, no hay reintento */ }
+  } catch { /* offline or proxy down: dropped, no retry */ }
 }
 
 export function reportError(message, opts = {}) { return post('error', message, opts); }
@@ -54,8 +54,8 @@ function hookGlobalErrors() {
   });
 }
 
-// Llamar UNA vez al arrancar, con el nombre de la app (para distinguir
-// elffuss-code de elffuss-claw en los informes) — lee la preferencia guardada.
+// Call ONCE at startup with the name of the app (so elffuss-code and
+// elffuss-claw can be told apart in the reports) — reads the stored preference.
 export function init(name) {
   appName = name || appName;
   try { enabled = localStorage.getItem(storageKey()) === '1'; } catch { enabled = false; }

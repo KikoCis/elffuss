@@ -1,131 +1,135 @@
-// Lado SEMÁNTICO del motor de contexto (el compañero de acer-core.js).
+// SEMANTIC side of the context engine (the companion to context.js).
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// POR QUÉ EXISTE
+// WHY IT EXISTS
 //
-// acer-core.js ya trae la vía híbrida completa (`packHistoryACERHybrid`): BM25 y
-// embeddings fusionados por rangos. Lo que le faltaba era una función `embed`,
-// así que degradaba a la vía léxica y en producción sólo corría BM25.
+// `context.js` already ships the complete hybrid path (`packHistoryAsync`):
+// BM25 and embeddings fused by rank. What it was missing was an `embed`
+// function, so it fell back to the lexical path and in production only BM25 ran.
 //
-// Medido en LoCoMo (200 preguntas, F1 del propio repo, modelo real respondiendo,
-// mismo presupuesto de tokens):
+// Measured on LoCoMo (200 questions, the benchmark repo's own F1, a real model
+// answering, same token budget):
 //
-//     contexto COMPLETO sin comprimir ..... 22,56
-//     BM25 (lo que corría hasta ahora) .... 23,59
-//     embeddings solos .................... 23,95
-//     fusión de RANGOS (esto) ............. 28,09   ← +4,50 sobre BM25
+//     FULL context, uncompressed .......... 22.56
+//     BM25 (what ran until now) ........... 23.59
+//     embeddings alone .................... 23.95
+//     RANK fusion (this) .................. 28.09   ← +4.50 over BM25
 //
-// El motivo de que sume no es que lo semántico sea «mejor»: en global EMPATAN
-// (23,59 vs 23,95). Hacen trabajos DISTINTOS. Partiendo las mismas preguntas por
-// solape de vocabulario entre la pregunta y la respuesta:
+// The reason it adds anything is not that the semantic side is "better": overall
+// they TIE (23.59 vs 23.95). They do DIFFERENT jobs. Splitting the same
+// questions by vocabulary overlap between question and answer:
 //
-//                            sin solape (n=107)   con solape (n=93)
-//     BM25 ...................... 18,60               29,33
-//     embeddings ................ 24,28               23,58
-//     fusión de rangos .......... 24,05               32,73
+//                            no overlap (n=107)   overlap (n=93)
+//     BM25 ...................... 18.60               29.33
+//     embeddings ................ 24.28               23.58
+//     rank fusion ............... 24.05               32.73
 //
-// Cuando la pregunta NO nombra literalmente lo que busca, BM25 se hunde (18,60)
-// y lo semántico aguanta (24,28). Cuando sí lo nombra, manda BM25 (29,33). La
-// fusión se queda con los dos. Lo semántico no sustituye al léxico: le cubre el
-// punto ciego. Eso —y no una ganancia global— es lo que se está cableando aquí.
+// When the question does NOT literally name what it is looking for, BM25 sinks
+// (18.60) and the semantic side holds up (24.28). When it does name it, BM25
+// wins (29.33). The fusion keeps both. The semantic side does not replace the
+// lexical one: it covers its blind spot. That — and not an overall gain — is
+// what is being wired up here.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// MODELO ELEGIDO — Xenova/multilingual-e5-small, dtype q8 (118 MB)
+// MODEL CHOSEN — Xenova/multilingual-e5-small, dtype q8 (118 MB)
 //
-// Requisitos duros y cómo los cumple:
-//   · transformers.js: es la conversión ONNX oficial del mantenedor de la
-//     librería → carga con el MISMO `pipeline()` que ya usa providers/onnx.js.
-//   · pequeño: 118 MB en q8. Es la variante más liviana del repo (el q4 pesa
-//     MÁS —398 MB— porque la matriz de embeddings de un vocabulario de 250k no
-//     se cuantiza igual de bien; aquí «menos bits» no significa menos disco).
-//   · multilingüe: tokenizador XLM-R, 100 idiomas. Los prompts van en castellano
-//     y el código en inglés, y ese cruce es exactamente el punto ciego léxico.
-//   · licencia: MIT (intfloat/multilingual-e5-small aguas arriba).
-//   · ventana de 512 tokens, que es la que necesitan los bloques que arma
-//     acer-core; no es un modelo de frases sueltas.
+// Hard requirements and how it meets them:
+//   · transformers.js: it is the official ONNX conversion by the library's own
+//     maintainer → it loads with the SAME `pipeline()` providers/onnx.js uses.
+//   · small: 118 MB at q8. It is the lightest variant in the repo (q4 weighs
+//     MORE — 398 MB — because the embedding matrix of a 250k vocabulary does not
+//     quantise as well; here "fewer bits" does not mean less disk).
+//   · multilingual: XLM-R tokeniser, 100 languages. The prompts are in Spanish
+//     and the code is in English, and that crossing is exactly the lexical
+//     blind spot.
+//   · licence: MIT (intfloat/multilingual-e5-small upstream).
+//   · a 512-token window, which is what the blocks the packer assembles need;
+//     this is not a single-sentence model.
 //
-// Descartados, y por qué:
-//   · Xenova/all-MiniLM-L6-v2 (23 MB, Apache-2.0) — 5× más barato, pero SÓLO
-//     inglés. Justo el caso que venimos a cubrir es el castellano.
-//   · Xenova/paraphrase-multilingual-MiniLM-L12-v2 (118 MB, Apache-2.0) — mismo
-//     peso, pero está afinado para paráfrasis de FRASES con ventana de 128
-//     tokens: trocearía los bloques por la mitad.
-//   · onnx-community/embeddinggemma-300m-ONNX (175 MB en q4f16 + pesos externos)
-//     — mejor calidad, pero 1,5× de descarga y licencia Gemma (uso comercial
-//     permitido pero con política de uso y obligaciones de redistribución), no
-//     una licencia comercial limpia.
-//   · ibm-granite/granite-embedding-107m-multilingual (Apache-2.0) — sólo
-//     publica ONNX en fp32: 428 MB, 3,6× la descarga.
-//   · minishlab/potion-multilingual-128M (MIT) — estático y rapidísimo, pero su
-//     único ONNX pesa 512 MB y transformers.js no lo soporta de serie.
+// Rejected, and why:
+//   · Xenova/all-MiniLM-L6-v2 (23 MB, Apache-2.0) — 5× cheaper, but English
+//     ONLY. Spanish is precisely the case we came here to cover.
+//   · Xenova/paraphrase-multilingual-MiniLM-L12-v2 (118 MB, Apache-2.0) — same
+//     weight, but it is tuned for SENTENCE paraphrase with a 128-token window:
+//     it would cut the blocks in half.
+//   · onnx-community/embeddinggemma-300m-ONNX (175 MB at q4f16 + external
+//     weights) — better quality, but 1.5× the download and a Gemma licence
+//     (commercial use permitted, but with a use policy and redistribution
+//     obligations), not a clean commercial licence.
+//   · ibm-granite/granite-embedding-107m-multilingual (Apache-2.0) — only
+//     publishes ONNX in fp32: 428 MB, 3.6× the download.
+//   · minishlab/potion-multilingual-128M (MIT) — static and extremely fast, but
+//     its only ONNX weighs 512 MB and transformers.js does not support it
+//     out of the box.
 //
-// DTYPE SEGÚN EL DISPOSITIVO — medido, no supuesto. Mismo modelo, mismo lote de
-// bloques, sólo cambiando dtype y dispositivo (coste relativo, 1,0 = el mejor):
+// DTYPE BY DEVICE — measured, not assumed. Same model, same batch of blocks,
+// changing only dtype and device (relative cost, 1.0 = the best):
 //
-//     fp16 / WebGPU ....  1,0×   (235 MB)   ← el elegido cuando hay adaptador
-//     q4f16/ WebGPU ....  0,6×   (205 MB)   con bloques medianos; ver punto 2
-//     q8   / wasm ......  8,9×   (118 MB)   ← la red de seguridad
-//     fp32 / wasm ...... 11,0×   (470 MB)
-//     q8   / WebGPU .... 14,1×   (118 MB)   ← PEOR que en CPU
+//     fp16 / WebGPU ....  1.0×   (235 MB)   ← the pick when there is an adapter
+//     q4f16/ WebGPU ....  0.6×   (205 MB)   with medium blocks; see point 2
+//     q8   / wasm ......  8.9×   (118 MB)   ← the safety net
+//     fp32 / wasm ...... 11.0×   (470 MB)
+//     q8   / WebGPU .... 14.1×   (118 MB)   ← WORSE than on CPU
 //
-// Dos cosas que contradicen la intuición y por eso van escritas:
-//   1. Los enteros de 8 bits NO se aceleran en WebGPU: ORT-web no tiene kernels
-//      para esos operadores y acaba yendo y viniendo de la CPU. El fichero más
-//      pequeño resulta ser el MÁS LENTO en la GPU. Elegir dtype por tamaño de
-//      descarga, sin medir, habría dado la peor combinación posible.
-//   2. Con textos CORTOS —que es nuestro caso, ver SEM_BUDGET en context.js— el
-//      4-bit se da la vuelta y pierde contra fp16 (2,6× más lento en líneas
-//      sueltas): a esas longitudes se paga más por deshacer la cuantización que
-//      lo que se ahorra en ancho de banda. Por eso fp16 y no q4f16, aunque en
-//      bloques grandes q4f16 gane.
+// Two things that contradict intuition, which is why they are written down:
+//   1. 8-bit integers are NOT accelerated on WebGPU: ORT-web has no kernels for
+//      those operators and ends up bouncing back and forth to the CPU. The
+//      smallest file turns out to be the SLOWEST on the GPU. Picking a dtype by
+//      download size, without measuring, would have given the worst possible
+//      combination.
+//   2. With SHORT texts — which is our case, see the block sizing in context.js —
+//      4-bit flips around and loses to fp16 (2.6× slower on single lines): at
+//      those lengths you pay more to undo the quantisation than you save in
+//      bandwidth. Hence fp16 and not q4f16, even though q4f16 wins on large
+//      blocks.
 //
-// De ahí la regla: fp16 si hay adaptador WebGPU de verdad, y q8/wasm como red de
-// seguridad. La red de seguridad FUNCIONA pero es ~9× más lenta, hasta el punto
-// de notarse en cada turno, y ése es uno de los motivos de que el lado semántico
-// vaya apagado por defecto (ver context.js).
+// Hence the rule: fp16 if there is a real WebGPU adapter, and q8/wasm as the
+// safety net. The safety net WORKS but it is ~9× slower, to the point of being
+// noticeable on every turn, and that is one of the reasons the semantic side is
+// off by default (see context.js).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { createEmbedCache } from './acer-core.js';
+import { createEmbedCache } from './context.js';
 
 export const EMBED_MODEL = {
   id: 'Xenova/multilingual-e5-small',
   dims: 384,
   label: 'multilingual-e5-small',
-  // dtype → fichero → descarga
+  // dtype → file → download
   webgpu: { dtype: 'fp16', sizeMB: 235 },
   wasm: { dtype: 'q8', sizeMB: 118 },
 };
 
-// La ventana del modelo son 512 tokens; recortar antes de tokenizar evita pagar
-// el troceado de texto que el propio modelo va a descartar.
+// The model's window is 512 tokens; trimming before tokenising avoids paying to
+// split text the model itself is going to discard.
 const MAX_CHARS = 2000;
 
-// Lotes pequeños: transformers.js rellena cada lote hasta el más largo, así que
-// un lote gigante hace pagar la longitud del peor elemento por todos.
+// Small batches: transformers.js pads every batch up to its longest item, so a
+// giant batch makes everyone pay the length of the worst element.
 const BATCH = 16;
 
-// e5 se entrenó SIEMPRE con prefijo ('query: ' / 'passage: '), nunca con texto
-// pelado. acer-core llama a la misma `embed` para la pregunta y para los
-// bloques, y no hay forma de distinguirlos sin tocar el núcleo; los autores del
-// modelo documentan usar 'query: ' en AMBOS lados para uso simétrico. Quitarlo
-// del todo sería peor: el modelo nunca vio esa distribución.
+// e5 was ALWAYS trained with a prefix ('query: ' / 'passage: '), never with bare
+// text. the packer calls the same `embed` for the question and for the blocks,
+// and there is no way to tell them apart without touching the core; the model's
+// authors document using 'query: ' on BOTH sides for symmetric use. Dropping it
+// altogether would be worse: the model never saw that distribution.
 const PREFIX = 'query: ';
 
 let pipePromise = null;
-export let backend = null;   // {device, dtype, sizeMB} una vez resuelto
+export let backend = null;   // {device, dtype, sizeMB} once resolved
 
 /**
- * Carga PEREZOSA: nada de esto se toca en el arranque. El módulo entero se
- * importa dinámicamente desde context.js sólo cuando la bandera está encendida,
- * y el modelo no se descarga hasta la primera petición que de verdad lo use.
+ * LAZY loading: none of this is touched at startup. The whole module is
+ * dynamically imported from context.js only when the flag is on, and the model
+ * is not downloaded until the first request that genuinely uses it.
  */
 function getPipe(onProgress) {
   if (!pipePromise) {
     pipePromise = (async () => {
       const tf = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@4');
-      // navigator.gpu puede EXISTIR sin adaptador real (mismo cuidado que en
-      // providers/onnx.js): comprobar el adaptador, no el objeto. Elegir mal
-      // aquí significa descargar 235 MB para acabar corriendo en CPU.
+      // navigator.gpu can EXIST without a real adapter (same care as in
+      // providers/onnx.js): check the adapter, not the object. Choosing wrong
+      // here means downloading 235 MB only to end up running on the CPU.
       let device = 'wasm';
       if (navigator.gpu) {
         try { device = (await navigator.gpu.requestAdapter()) ? 'webgpu' : 'wasm'; }
@@ -137,10 +141,10 @@ function getPipe(onProgress) {
         dtype: cfg.dtype,
         progress_callback: onProgress,
       });
-      backend = cfg;   // sólo cuando de verdad está listo: isReady() no miente
+      backend = cfg;   // only once it is genuinely ready: isReady() does not lie
       return pipe;
     })().catch(e => {
-      pipePromise = null;   // que un fallo de red no deje el módulo muerto
+      pipePromise = null;   // do not let a network failure leave the module dead
       backend = null;
       throw e;
     });
@@ -148,16 +152,16 @@ function getPipe(onProgress) {
   return pipePromise;
 }
 
-/** Precarga opcional (p.ej. desde Ajustes) sin bloquear ningún turno. */
+/** Optional preload (e.g. from Settings) without blocking any turn. */
 export function warmup(onProgress) { return getPipe(onProgress); }
 
-/** ¿Está ya cargado? Sirve para decidir si un turno va a pagar la descarga. */
+/** Already loaded? Useful to decide whether a turn will pay for the download. */
 export function isReady() { return backend !== null; }
 
 /**
- * embed(textos) → vectores normalizados de 384 dimensiones.
- * Contrato exacto que espera `packHistoryACERHybrid`: si esto lanza, acer-core
- * se va por la vía léxica sin romperse ni avisar.
+ * embed(texts) → normalised 384-dimension vectors.
+ * The exact contract `packHistoryAsync` expects: if this throws, the packer
+ * takes the lexical path without breaking and without complaining.
  */
 export async function embed(texts) {
   if (!texts || !texts.length) return [];
@@ -172,20 +176,23 @@ export async function embed(texts) {
   return out;
 }
 
-// Caché de sesión POR CONTENIDO. No es una optimización: es lo que hace viable
-// la idea. acer-core rearma los bloques desde el principio del historial en cada
-// turno, así que sin caché un texto que ya se codificó en el turno 3 se volvería
-// a codificar en el 4, el 5 y el 20 — el coste crecería con el CUADRADO de los
-// turnos. Con caché, cada bloque se codifica una vez por sesión y un turno sólo
-// paga los bloques nuevos.
-// El tope es holgado a propósito: acer-core trocea el historial ENTERO en cada
-// turno, así que si la caché desaloja entradas que el turno siguiente vuelve a
-// pedir, se recodifica gratis. Son vectores de 384 flotantes: ~12 MB llenos.
+// Session cache BY CONTENT. This is not an optimisation: it is what makes the
+// idea viable at all. the packer reassembles the blocks from the start of the
+// history on every turn, so without a cache a text already encoded on turn 3
+// would be re-encoded on turn 4, on turn 5 and on turn 20 — the cost would grow
+// with the SQUARE of the number of turns. With a cache, each block is encoded
+// once per session and a turn only pays for the new blocks.
+// The ceiling is deliberately generous: the packer chunks the ENTIRE history on
+// every turn, so if the cache evicts entries the next turn asks for again, they
+// get re-encoded for nothing. These are 384-float vectors: ~12 MB when full.
 let cache = null;
 export function embedCache() {
-  if (!cache) cache = createEmbedCache(embed, { max: 8000 });
+  // The signature is createEmbedCache(embed, max) with a NUMBER. Passing an
+  // object here meant `store.size > max` compared a number against an object,
+  // which is always false: the cache grew without bound and never evicted.
+  if (!cache) cache = createEmbedCache(embed, 8000);
   return cache;
 }
 
-/** Para diagnóstico/ajustes: cuántos textos lleva cacheados la sesión. */
+/** For diagnostics/settings: how many texts the session has cached so far. */
 export function embedCacheSize() { return cache ? cache.size() : 0; }

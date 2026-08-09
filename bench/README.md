@@ -1,73 +1,79 @@
-# Banco de recuerdo de hechos
+# Fact-recall benchmark
 
-Mide un empaquetador de contexto contestando a **una sola pregunta**, sin ningún modelo de por medio:
+It measures a context packer by answering **one single question**, with no model anywhere in the loop:
 
-> El agente leyó una definición a mitad de sesión. Al final se la piden.
-> **¿Sigue esa definición dentro del contexto empaquetado?**
+> The agent read a definition halfway through the session. At the end it is asked for it.
+> **Is that definition still inside the packed context?**
 
-## Por qué no hay un modelo juzgando
+## Why there is no model judging
 
-Porque un banco cuyo resultado depende de qué juez elijas **no sirve para decidir entre dos empaquetadores**.
+Because a benchmark whose result depends on which judge you pick **is no use for deciding between two packers**.
 
-Puntuando exactamente las mismas respuestas, con las mismas preguntas, tres jueces distintos nos dieron:
+Scoring exactly the same answers, with the same questions, three different judges gave us:
 
-| juez | resultado |
+| judge | result |
 |---|---|
-| un modelo de razonamiento de 11 GB | **WRONG a todo** — razonaba bien, pero escribía en otro campo |
-| un 7B con el prompt permisivo | **CORRECT a todo**, incluido *"enfermera"* contra la referencia *"maestra"* |
-| el mismo 7B con el prompt endurecido | 8/8 en el control |
+| an 11 GB reasoning model | **WRONG on everything** — it reasoned correctly, but wrote into another field |
+| a 7B with the permissive prompt | **CORRECT on everything**, including *"nurse"* against the reference *"teacher"* |
+| the same 7B with the hardened prompt | 8/8 on the control |
 
-Los dos primeros no eran modelos malos: uno estaba razonando correctamente y el otro contestaba por inercia. **La diferencia entre el segundo y el tercero fue solo el prompt.** Un número que se mueve así no puede arbitrar una decisión de ingeniería.
+The first two were not bad models: one was reasoning correctly and the other was answering out of inertia. **The only difference between the second and the third was the prompt.** A number that moves like that cannot arbitrate an engineering decision.
 
-Este banco no tiene ese problema: es una comprobación de presencia, determinista, y da el mismo resultado dos veces seguidas.
+This benchmark does not have that problem: it is a presence check, deterministic, and it gives the same result twice in a row.
 
-## Cómo se generan las sesiones
+## How the sessions are generated
 
-**No son sintéticas.** Se abre un proyecto real y se ejecutan herramientas de verdad sobre él —listar el árbol, leer ficheros paginados, buscar—, y cada resultado que entra en el historial es la salida auténtica de esa herramienta, con su formato real: sus miles de líneas de ruido, sus rutas, sus números de línea.
+**They are not synthetic.** A real project is opened and real tools are run over it — list the tree, read paginated files, search — and every result that enters the history is the genuine output of that tool, in its real format: its thousands of lines of noise, its paths, its line numbers.
 
-Eso importa porque el fallo que se busca solo aparece con material real. Un resultado de herramienta es mayoritariamente ruido con dos líneas útiles dentro; con texto sintético uniforme, cualquier empaquetador parece bueno.
+That matters because the failure being hunted only shows up with real material. A tool result is mostly noise with two useful lines inside it; with uniform synthetic text, any packer looks good.
 
-Lo único guionizado es **qué herramienta llama el agente a continuación** —la parte que decidiría un modelo—, sacado de un generador con semilla para tener muchas sesiones distintas y poder reportar media entre semillas en vez de una tirada afortunada.
+The only scripted part is **which tool the agent calls next** — the part a model would decide — drawn from a seeded generator so there are many different sessions and a mean across seeds can be reported instead of one lucky run.
 
-## Uso
+## Usage
 
 ```bash
-node run.mjs --root <ruta-de-un-repo>
+node run.mjs --root <path-to-a-repo>
 ```
 
-Opciones: `--ext .js` · `--budget 3000` · `--seeds 8` · `--packer <fichero.js>`
+Options: `--ext .js` · `--budget 3000` · `--seeds 8` · `--packer <file.js>`
 
-`--packer` debe exportar `packHistory(history, budgetTokens)`. Por defecto usa el core de este mismo repositorio, así que los números de abajo se reproducen sin configurar nada.
+`--packer` must export `packHistory(history, budgetTokens)`. By default it uses this repository's own core, so the numbers below reproduce with nothing to configure.
 
-## Las tres condiciones
+## The three conditions
 
-Todas reciben **el mismo presupuesto de tokens**. Lo único que cambia es la política de selección.
+All of them get **the same token budget**. The only thing that changes is the selection policy.
 
-| | qué hace |
+| | what it does |
 |---|---|
-| `full` | el historial entero, sin comprimir — el techo, y no respeta el presupuesto |
-| `tail` | los últimos mensajes hasta llenar el presupuesto, tirar el resto |
-| `packer` | el empaquetador que se está midiendo |
+| `full` | the entire history, uncompressed — the ceiling, and it does not respect the budget |
+| `tail` | the last messages until the budget is full, throw away the rest |
+| `packer` | the packer being measured |
 
-**`tail` es el listón que hay que batir, y es el motivo de que este banco exista.** Cuatro generaciones de nuestro empaquetador se midieron cada una contra la anterior, todas ganando, y ninguna contra `tail`. Cuando por fin se puso, resultó que una de esas versiones **puntuaba por debajo**: comprimir con ella era peor que no comprimir. Si tu empaquetador no le gana a *"quédate lo último y tira el resto"*, nada más de lo que midas de él significa nada.
+**`tail` is the bar that has to be cleared, and it is the reason this benchmark exists.** Four generations of our packer were each measured against the previous one, all of them winning, and none of them against `tail`. When `tail` was finally put in, it turned out that one of those versions **scored below it**: compressing with it was worse than not compressing at all. If your packer does not beat *"keep the last bit and throw away the rest"*, nothing else you measure about it means anything.
 
-## Resultado sobre este mismo repositorio
+## Result over this very repository
 
 ```
 node run.mjs --root ../core --ext .js --seeds 8
 ```
 
-| presupuesto | `tail` | **`packer`** | `full` (techo) |
+| budget | `tail` | **`packer`** | `full` (ceiling) |
 |---|---|---|---|
-| 3.000 | 45,3 % | **92,2 %** · 2.073 tok | 100 % · 29.462 tok |
-| 8.000 | 68,8 % | **95,3 %** · 5.253 tok | 100 % · 29.462 tok |
+| 3,000 | 48.4% | **93.8%** · 1,596 tok | 100% · 29,732 tok |
+| 8,000 | 70.3% | **95.3%** · 2,965 tok | 100% · 29,732 tok |
 
-8 sesiones, 64 sondas. El corpus es el propio `core/` de este repositorio, así que cualquiera reproduce estas cifras clonando y ejecutando una orden.
+Note the token column: at a 8,000 budget the packer spends 2,965 — it stops when it runs out of *relevant material*, not when it runs out of room. The budget is a ceiling, not a quota.
 
-## Qué NO mide
+8 sessions, 64 probes.
 
-- **Que el modelo use bien lo que recibe.** Presencia es condición necesaria, no suficiente: tener la evidencia delante no garantiza acertar. Para eso hace falta un banco con un modelo respondiendo, con todos los problemas de arbitraje descritos arriba.
-- **Preguntas cuya respuesta no está en ninguna línea.** *"¿Cuántos ficheros has tocado?"* está repartida en cuarenta mensajes y ninguna selección top-k la alcanza por construcción.
-- **Conversación.** Está hecho sobre sesiones de agente con herramientas. Un empaquetador ajustado aquí puede perder en diálogo: nos pasó, y la causa resultó ser el partidor de palabras, no la política de empaquetado.
+⚠️ **These figures are a reference point, not a constant, and it is worth knowing why.** The corpus is this repository's own `core/`, and the sessions embed the genuine output of `git status`, `git log` and `ls -la` on the working tree. That is the whole point — real tool output, with its real noise — but it also means the numbers move when the tree moves. They are deterministic for a fixed state (run it twice, get the same thing) and they shifted by a couple of points when the comments in `core/` were translated to English, because translating the corpus *is* changing the corpus.
 
-Apache-2.0, como el resto del repositorio.
+So: reproduce the ordering, not the third decimal. If `packer` is not far above `tail` on your tree, that is the signal — not whether it lands on 93.8.
+
+## What it does NOT measure
+
+- **That the model uses well what it receives.** Presence is a necessary condition, not a sufficient one: having the evidence in front of you does not guarantee getting it right. For that you need a benchmark with a model answering, with all the arbitration problems described above.
+- **Questions whose answer is in no single line.** *"How many files have you touched?"* is spread across forty messages and no top-k selection reaches it, by construction.
+- **Conversation.** This is built on agent sessions with tools. A packer tuned here can lose in dialogue: it happened to us, and the cause turned out to be the word splitter, not the packing policy.
+
+Apache-2.0, like the rest of the repository.

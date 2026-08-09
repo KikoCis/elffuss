@@ -1,13 +1,13 @@
-// Vista «Mente de Elffuss» — el pensamiento subyacente del cerebro CEO en un
-// mundo 3D de fantasía psicodélica trance, con la CIUDAD real del proyecto
-// (motor VibeCodeViewer) flotando por debajo.
-//  · cada línea/tool-call que llega nace como una ESTRELLA de texto (color por
-//    PERFIL, tamaño/tipografía según lo que ocurre) que se desvanece sola.
-//  · los perfiles (nombre, foco, color) se editan desde ⚙ — el usuario los crea
-//    a su gusto.
-//  · «≡ historial»: panel con TODO lo que ha llegado, sin recortar.
-//  · cuando lee/escribe un fichero real, un haz baja hasta él en la ciudad.
-//  · overlay PERSISTENTE (música/animación no reinician al salir y volver).
+// "Elffuss Mind" view — the CEO brain's underlying thinking rendered as a
+// psychedelic-trance 3D fantasy world, with the project's real CITY
+// (VibeCodeViewer engine) floating underneath.
+//  · every line/tool-call that arrives is born as a text STAR (colour by
+//    PROFILE, size/typeface according to what is happening) that fades on its own.
+//  · the profiles (name, focus, colour) are edited from ⚙ — the user creates
+//    them to taste.
+//  · "≡ historial": a panel with EVERYTHING that has arrived, untruncated.
+//  · when it reads/writes a real file, a beam drops onto it in the city.
+//  · PERSISTENT overlay (music/animation do not restart on leaving and returning).
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -23,22 +23,22 @@ const CEO_COLOR = '#ff4d8d';
 
 let open = false, built = false, raf = null;
 let overlay, S, widget, onOpenFile = () => {}, onExecute = () => {};
-// Ciudad de fondo (vista real del workspace) y semilla de pensamientos previos:
-// AMBOS opcionales e inyectados por la app anfitriona — Code tiene un motor
-// VibeCodeViewer sobre su proyecto único; Claw (v1) no lo ofrece y la Mente
-// funciona igual de bien sin ciudad de fondo.
+// Background city (the real view of the workspace) and the seed of previous
+// thoughts: BOTH optional and injected by the host app — Code has a
+// VibeCodeViewer engine over its single project; Claw (v1) does not offer one
+// and the Mind works just as well without a background city.
 let loadThoughts = async () => [];             // () => [{path, md}]
 let buildCityFn = null;                        // (scene) => {cityWrap, cityCity, cityModel} | null
 export function init({ loadThoughts: lt, buildCity: bc } = {}) {
   if (lt) loadThoughts = lt;
   if (bc) buildCityFn = bc;
 }
-let anchorMap = new Map();     // id de perfil (+ 'ceo') → Vector3 (anclas del mundo)
-const anchors = [];            // { el, pos } — solo etiquetas de propuestas forjadas
+let anchorMap = new Map();     // profile id (+ 'ceo') → Vector3 (world anchors)
+const anchors = [];            // { el, pos } — labels of forged proposals only
 let nodesGroup, thoughtNodes = [];
-let starGroup, stars = [];     // estrellas de pensamiento efímeras
-const lineBuf = new Map();     // canal → texto acumulado hasta la línea completa
-const streamed = new Map();    // canal → ¿llegaron tokens? (evita duplicar el texto final)
+let starGroup, stars = [];     // ephemeral thought stars
+const lineBuf = new Map();     // channel → text accumulated until the line is complete
+const streamed = new Map();    // channel → did tokens arrive? (avoids duplicating the final text)
 let cityWrap = null, cityCity = null, cityModel = null;
 let beams = [], fileActivity = [];
 
@@ -51,7 +51,7 @@ const profileOf = channel => channel === 'ceo'
   ? { id: 'ceo', name: 'CEO', color: CEO_COLOR }
   : ceo.getProfiles().find(p => p.id === channel) || { id: channel, name: channel, color: '#7c5cff' };
 
-// ── música con Widget API (persistente: pausa al salir, reanuda al volver) ──
+// ── music via the Widget API (persistent: pauses on leaving, resumes on return) ──
 function mountMusic(root) {
   const wrap = document.createElement('div');
   wrap.className = 'mind-music';
@@ -61,12 +61,12 @@ function mountMusic(root) {
     '<div class="mind-music-cap">▶ Dekel · Baoba Festival — modo trance</div>';
   root.appendChild(wrap);
   const iframe = wrap.querySelector('#mind-sc');
-  const initWidget = () => { try { widget = window.SC.Widget(iframe); } catch { /* aún no */ } };
+  const initWidget = () => { try { widget = window.SC.Widget(iframe); } catch { /* not yet */ } };
   if (window.SC && window.SC.Widget) initWidget();
   else { const s = document.createElement('script'); s.src = 'https://w.soundcloud.com/player/api.js'; s.onload = initWidget; document.head.appendChild(s); }
 }
 
-// ══ ESTRELLAS de pensamiento: cada línea/tool-call nace, brilla y se apaga ══
+// ══ thought STARS: every line/tool-call is born, shines and burns out ══
 function makeTextSprite(text, color, { fontSize = 16, bold = false, glow = 10 } = {}) {
   const pad = 8;
   const probe = document.createElement('canvas').getContext('2d');
@@ -88,7 +88,7 @@ function makeTextSprite(text, color, { fontSize = 16, bold = false, glow = 10 } 
   return sprite;
 }
 
-// kind: 'line' (charla normal) · 'tool' (tool-call) · 'event' (ciclo/estado) · 'built' (propuesta forjada)
+// kind: 'line' (normal talk) · 'tool' (tool-call) · 'event' (cycle/status) · 'built' (forged proposal)
 const KIND_STYLE = {
   line: { fontSize: 13, bold: false, glow: 8, life: 6, jitter: 15 },
   tool: { fontSize: 17, bold: true, glow: 16, life: 9, jitter: 9 },
@@ -110,10 +110,10 @@ function spawnStar(channel, text, kind = 'line') {
   if (stars.length > 160) { const old = stars.shift(); starGroup.remove(old.obj); old.obj.material.map.dispose(); old.obj.material.dispose(); }
 }
 
-// ── historial COMPLETO (todo lo que llega, sin recortar) — PERSISTENTE: antes
-// vivía solo en el DOM/memoria y una recarga de página lo borraba entero.
+// ── FULL history (everything that arrives, untruncated) — PERSISTENT: it used
+// to live only in the DOM/memory and a page reload wiped it entirely.
 const LOG_CAP = 500;
-let logHistory = [];       // [{channel, text}] — se guarda en IndexedDB
+let logHistory = [];       // [{channel, text}] — stored in IndexedDB
 let logSaveTimer = null;
 function saveLogSoon() {
   clearTimeout(logSaveTimer);
@@ -142,7 +142,7 @@ async function loadPersistedLog() {
     if (!Array.isArray(saved) || !saved.length) return;
     logHistory = saved;
     for (const { channel, text } of saved) renderLogRow(channel, text);
-  } catch { /* aún no hay historial guardado */ }
+  } catch { /* no saved history yet */ }
 }
 
 function flushLine(channel, force = false) {
@@ -152,7 +152,7 @@ function flushLine(channel, force = false) {
   lineBuf.set(channel, '');
 }
 
-// alimenta estrellas + historial + haces sobre la ciudad (ceo.js → aquí)
+// feeds stars + history + beams over the city (ceo.js → here)
 export function pushThought(channel, ev) {
   if (!open) return;
   if (channel === 'sys') { logLine('ceo', ev.text); return; }
@@ -177,24 +177,24 @@ export function pushThought(channel, ev) {
     logLine(channel, '⟐ ' + ev.text);
     if (ev.path) fileBeam(ev.path, /escrib/i.test(ev.text) ? 'write' : 'read');
   } else if (ev.type === 'tool_result') {
-    // el RESULTADO real de la tool (lo que de verdad se leyó/escribió/ejecutó),
-    // enlazado justo debajo de su tool-call — no solo el nombre de la acción.
+    // the tool's real RESULT (what was actually read/written/executed), linked
+    // right under its tool call — not just the name of the action.
     const t = '→ ' + (ev.text || '(sin salida)');
     spawnStar(channel, t, 'line');
     logLine(channel, t);
   } else if (ev.type === 'done') {
     flushLine(channel, true);
-    // el proveedor puede devolver el texto final SIN pasar por tokens (sin
-    // streaming) → si no vimos ningún token, esto es lo único que lo muestra.
+    // the provider may return the final text WITHOUT going through tokens (no
+    // streaming) → if we saw no token at all, this is the only thing that shows it.
     if (ev.text && !streamed.get(channel)) { spawnStar(channel, ev.text, 'line'); logLine(channel, ev.text); }
   }
 }
 
-// ── nodos de pensamiento clicables (cada .md forjado = un punto brillante) ──
+// ── clickable thought nodes (each forged .md = one shining point) ──
 function addThoughtNode({ path, md, text }) {
   if (!nodesGroup) return;
   const i = thoughtNodes.length;
-  const a = i * 2.399963; // ángulo áureo
+  const a = i * 2.399963; // golden angle
   const r = 30 + i * 5;
   const mesh = new THREE.Mesh(
     new THREE.IcosahedronGeometry(3.2, 0),
@@ -206,8 +206,8 @@ function addThoughtNode({ path, md, text }) {
   const lab = document.createElement('div');
   lab.className = 'mind-node-label';
   lab.textContent = (path || 'pensamiento').split('/').pop();
-  // clicable ella misma — antes SOLO el raycast contra la diminuta malla 3D
-  // abría el panel, fácil de fallar; la etiqueta es el blanco visible real.
+  // clickable itself — before, ONLY the raycast against the tiny 3D mesh opened
+  // the panel, easy to miss; the label is the real visible target.
   lab.addEventListener('click', () => selectThoughtNode(mesh));
   document.getElementById('mind-anchors').appendChild(lab);
   anchors.push({ el: lab, pos: mesh.position });
@@ -215,10 +215,10 @@ function addThoughtNode({ path, md, text }) {
 }
 
 async function loadExistingThoughts() {
-  try { for (const it of await loadThoughts()) addThoughtNode(it); } catch { /* aún no hay */ }
+  try { for (const it of await loadThoughts()) addThoughtNode(it); } catch { /* none yet */ }
 }
 
-// selección de un nodo de propuesta — desde la malla 3D (raycast) o su etiqueta
+// selecting a proposal node — from the 3D mesh (raycast) or from its label
 function selectThoughtNode(mesh) { showThoughtPanel(mesh); focusOn(mesh.position, 26); }
 
 function showThoughtPanel(node) {
@@ -238,7 +238,7 @@ function showThoughtPanel(node) {
   if (openBtn) openBtn.onclick = () => { onOpenFile(node.userData.path); root.classList.remove('show'); };
 }
 
-// ══ perfiles: anclas 3D + leyenda (recalculadas al abrir o al reprogramar) ══
+// ══ profiles: 3D anchors + legend (recomputed on open or on reprogramming) ══
 function computeAnchors() {
   const map = new Map();
   map.set('ceo', new THREE.Vector3(0, 46, 0));
@@ -260,7 +260,7 @@ function renderLegend() {
     row.onclick = () => { const pos = anchorMap.get(row.dataset.id); if (pos) focusOn(pos, 46); };
   });
 }
-// vuelo suave de la cámara hacia un punto — así «clic en algo → la cámara se centra»
+// smooth camera flight towards a point — so that "click something → the camera centres on it"
 let flyTo = null;
 function focusOn(pos, distance = 40) {
   if (!S) return;
@@ -272,7 +272,7 @@ function focusOn(pos, distance = 40) {
 const easeInOut = k => k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
 function rebuildWorld() { anchorMap = computeAnchors(); renderLegend(); }
 
-// ── panel ⚙: reprograma misión, carpeta-alma y PERFILES (editables) ──────
+// ── ⚙ panel: reprograms mission, soul folder and PROFILES (editable) ──────
 function wireConfig(root) {
   const btn = root.querySelector('#mind-config');
   const cfg = root.querySelector('#mind-cfg');
@@ -309,8 +309,8 @@ function wireConfig(root) {
     };
     cfg.querySelector('#cfg-think-now').onclick = () => { ceo.forceCycle(); cfg.classList.remove('show'); };
     cfg.querySelector('#cfg-save').onclick = () => {
-      // preserva el id original de cada perfil (si no, cada guardado los
-      // regeneraría desde el nombre y los ciclos en curso perderían el hilo)
+      // preserves each profile's original id (otherwise every save would
+      // regenerate them from the name and running cycles would lose the thread)
       const rows = [...cfg.querySelectorAll('.cfg-prof')].map(r => ({
         id: r.dataset.id || undefined,
         color: r.querySelector('.cp-color').value,
@@ -334,8 +334,8 @@ function wireHistory(root) {
   panel.querySelector('#ml-x').onclick = () => panel.classList.remove('show');
 }
 
-// play/stop del cerebro, visible dentro de la Mente. La elección la persiste
-// ceo.js (misma clave que usa el clic en la elfa) → sobrevive a recargar.
+// brain play/stop, visible inside the Mind. The choice is persisted by ceo.js
+// (the same key the click on the elf uses) → it survives a reload.
 function wirePlayStop(root) {
   const btn = root.querySelector('#mind-playstop');
   const paint = () => {
@@ -347,16 +347,16 @@ function wirePlayStop(root) {
   paint();
 }
 
-// ══ ciudad de fondo (motor de la app anfitriona, por debajo del mundo) ══════
+// ══ background city (host app's engine, underneath the world) ══════
 async function buildBackgroundCity(scene) {
   if (!buildCityFn) return;
   try {
     const city = await buildCityFn(scene);
     if (!city) return;
     cityWrap = city.cityWrap; cityCity = city.cityCity; cityModel = city.cityModel;
-  } catch { /* sigue sin ciudad de fondo */ }
+  } catch { /* carries on with no background city */ }
 }
-// haz de luz que baja hasta el fichero real en la ciudad + resalta su celda
+// beam of light dropping onto the real file in the city + highlights its cell
 function fileBeam(path, kind) {
   if (!cityModel || !cityCity || !S) return;
   const rel = String(path).replace(/^\.?\//, '');
@@ -373,7 +373,7 @@ function fileBeam(path, kind) {
   fileActivity.push({ id: f.id, born: elapsed, life: 2.2 });
 }
 
-// ── mundo psicodélico ───────────────────────────────────────────────────────
+// ── psychedelic world ───────────────────────────────────────────────────────
 function buildScene(canvas, W, H) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -468,7 +468,7 @@ export async function openMind() {
   S = buildScene(canvas, window.innerWidth, window.innerHeight);
   buildBackgroundCity(S.scene);
   await loadExistingThoughts();
-  await loadPersistedLog(); // el historial de «≡ historial» sobrevive a recargas
+  await loadPersistedLog(); // the "≡ historial" log survives reloads
 
   const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
   let downXY = null;
@@ -495,20 +495,20 @@ export async function openMind() {
   startLoop();
 }
 
-// Etiquetas de propuestas: se proyectan del mundo 3D a la pantalla, así que
-// con muchas acumuladas acaban solapándose ilegibles según el ángulo de
-// cámara. Aquí: cap a las más cercanas y reparto anti-solape (empuja hacia
-// abajo la que choca con otra ya colocada), para que se apilen separadas.
+// Proposal labels: they are projected from the 3D world onto the screen, so
+// once many have piled up they end up overlapping illegibly depending on the
+// camera angle. Here: cap to the nearest ones plus an anti-overlap pass (pushes
+// down whichever collides with one already placed), so they stack apart.
 const MAX_LABELS = 14, LABEL_W = 90, LABEL_H = 20;
 function projectAnchors() {
   const w = window.innerWidth, h = window.innerHeight, v = new THREE.Vector3();
   const projected = [];
   for (const a of anchors) {
     v.copy(a.pos).project(S.camera);
-    if (v.z > 1) { a.el.style.display = 'none'; continue; } // detrás de la cámara
+    if (v.z > 1) { a.el.style.display = 'none'; continue; } // behind the camera
     projected.push({ a, x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, depth: v.z });
   }
-  projected.sort((p1, p2) => p1.depth - p2.depth); // las más cercanas a la cámara, prioridad
+  projected.sort((p1, p2) => p1.depth - p2.depth); // nearest to the camera get priority
   projected.forEach((p, i) => { p.a.el.style.display = i < MAX_LABELS ? '' : 'none'; });
   const visible = projected.slice(0, MAX_LABELS).sort((p1, p2) => p1.x - p2.x || p1.y - p2.y);
   const placed = [];
@@ -556,7 +556,7 @@ function startLoop() {
       r.material.color.setHSL((t * 0.05 + r.userData.i * 0.03) % 1, 0.85, 0.6);
     }
     for (let i = 0; i < thoughtNodes.length; i++) { const n = thoughtNodes[i]; n.rotation.y = t + i; n.scale.setScalar(1 + Math.sin(t * 2 + i) * 0.14); }
-    // estrellas: nacen (fade-in), viven, se apagan solas y se reciclan
+    // stars: they are born (fade-in), live, burn out on their own and get recycled
     for (let i = stars.length - 1; i >= 0; i--) {
       const st = stars[i], age = t - st.born;
       if (age > st.life) { starGroup.remove(st.obj); st.obj.material.map.dispose(); st.obj.material.dispose(); stars.splice(i, 1); continue; }
@@ -565,7 +565,7 @@ function startLoop() {
       st.obj.position.y += st.up * dt;
       st.obj.position.x += Math.sin(t * 0.6 + st.seed) * 0.3 * dt;
     }
-    // haces sobre la ciudad + celdas de fichero resaltadas por actividad
+    // beams over the city + file cells highlighted by activity
     for (let i = beams.length - 1; i >= 0; i--) {
       const b = beams[i], age = t - b.born;
       if (age > b.life) { S.scene.remove(b.obj); b.obj.geometry.dispose(); b.obj.material.dispose(); beams.splice(i, 1); continue; }
@@ -597,7 +597,7 @@ export function closeMind() {
   if (overlay) overlay.style.display = 'none';
 }
 
-// para tests/depuración
+// for tests/debugging
 export function _debug() {
   return {
     starCount: stars.length, hasCity: !!cityCity, profileCount: ceo.getProfiles().length,

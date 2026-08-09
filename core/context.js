@@ -1,82 +1,85 @@
-// Gestor de contexto: selección del historial por RELEVANCIA frente a la
-// pregunta viva. BM25 con IDF endógena + control de redundancia (MMR), y de
-// forma opcional una segunda opinión semántica fusionada por rangos.
+// Context manager: selecting the history by RELEVANCE against the live
+// question. BM25 with endogenous IDF + redundancy control (MMR), and optionally
+// a second, semantic opinion fused by rank.
 //
-// ── qué cambió respecto de la versión anterior, y por qué ────────────────────
+// ── what changed from the previous version, and why ─────────────────────────
 //
-// 1. FUERA la lista de parada escrita a mano. Antes había un STOP con ~90
-//    palabras castellanas. La IDF ya se calcula sobre el propio historial, así
-//    que lo ubicuo recibe peso casi nulo por construcción — sin diccionario y
-//    sin saber en qué idioma estamos. Una lista a mano solo sabía castellano:
-//    en una sesión de código en inglés no filtraba nada, y en cualquier idioma
-//    envejecía. La IDF endógena se adapta a cada conversación.
+// 1. OUT goes the hand-written stoplist. There used to be a STOP list of ~90
+//    Spanish words. IDF is already computed over the history itself, so
+//    whatever is ubiquitous gets near-zero weight by construction — with no
+//    dictionary and without knowing what language we are in. A hand-written
+//    list only knew Spanish: in an English coding session it filtered nothing,
+//    and in any language it aged. Endogenous IDF adapts to every conversation.
 //
-// 2. FUERA el recorte ciego de resultados antiguos. Antes se truncaban a 600
-//    caracteres los `[resultado …]` viejos ANTES de puntuarlos. No se puede
-//    recuperar lo que se tiró antes de medir si importaba: si la respuesta
-//    estaba en el carácter 900, ya no había forma de encontrarla. Ahora se
-//    puntúa primero y se recorta después, y por línea.
+// 2. OUT goes the blind trimming of old results. Old `[resultado …]` messages
+//    used to be truncated to 600 characters BEFORE being scored. You cannot
+//    retrieve what you threw away before measuring whether it mattered: if the
+//    answer was at character 900, there was no longer any way to find it. Now
+//    it is scored first and trimmed afterwards, and per line.
 //
-// 3. Granularidad de LÍNEA, no de mensaje. Un resultado de herramienta es
-//    mayoritariamente ruido con dos líneas útiles; quedárselo o tirarlo entero
-//    desperdicia presupuesto en ambos sentidos.
+// 3. LINE granularity, not message granularity. A tool result is mostly noise
+//    with two useful lines in it; keeping it whole or dropping it whole wastes
+//    budget in both directions.
 //
-// 4. Control de REDUNDANCIA (MMR). Es lo único que suma por encima de BM25, y
-//    poco: +2,4 puntos a escala completa. (Un smoke de 3 semillas decía +8,9;
-//    era ruido de semilla. BM25 con IDF endógena hace casi todo el trabajo.)
+// 4. REDUNDANCY control (MMR). It is the only thing that adds anything on top
+//    of BM25, and not much: +2.4 points at full scale. (A 3-seed smoke test
+//    said +8.9; that was seed noise. BM25 with endogenous IDF does almost all
+//    of the work.)
 //
-// 5. Las perillas salen de la PRESIÓN medida, no de constantes — ver prepare().
+// 5. The knobs come from the measured PRESSURE, not from constants — see prepare().
 //
-// 6. FECHAS ABSOLUTAS al escribir. «ayer» dicho en el turno 3 es mentira en el
-//    turno 40, y eso NO es un fallo de recuperación: la línea se recupera bien y
-//    lo que lleva es falso. Se anota la fecha del turno junto al original — ver
-//    annotateDates. Sonda propia (el banco de hechos no puede verlo): la fecha
-//    pasa de estar el 0 % de las veces a estar el 100 %, por +7 tokens.
+// 6. ABSOLUTE DATES at write time. "yesterday", said on turn 3, is a lie on
+//    turn 40, and that is NOT a retrieval failure: the line is retrieved just
+//    fine and what it carries is false. The turn's date is annotated next to
+//    the original — see annotateDates. Our own probe (the fact benchmark cannot
+//    see this): the date goes from being present 0% of the time to 100% of the
+//    time, for +7 tokens.
 //
-// 7. TARJETA DE RECUENTO, tras bandera. «¿cuántos ficheros has tocado?» no está
-//    en ninguna línea; ningún top-k la encuentra por construcción. Se cuenta al
-//    escribir — ver buildLedger. Cuesta −0,7 puntos de recall a presupuesto
-//    3.000 y nada a 16.000, así que va apagada por defecto.
+// 7. TALLY CARD, behind a flag. "how many files have you touched?" is in no
+//    line at all; no top-k finds it, by construction. It is counted at write
+//    time — see buildLedger. It costs −0.7 points of recall at budget 3,000 and
+//    nothing at 16,000, so it is off by default.
 //
-// Medido a igual presupuesto de tokens (recall de hechos, sin juez LLM;
-// 25 sesiones, 174 sondas):
-//     truncar por la cola .........  7,0 %
-//     empaquetador anterior ....... 15,1 %
-//     este ........................ 65,3 % ± 8,5
+// Measured at equal token budget (fact recall, no LLM judge; 25 sessions,
+// 174 probes):
+//     tail truncation .............  7.0%
+//     previous packer ............. 15.1%
+//     this one .................... 65.3% ± 8.5
 //
-// El presupuesto es en tokens (~4 chars/token). Los últimos RECENT mensajes se
-// conservan literales mientras quepan en su reserva; el resto compite.
+// The budget is in tokens (~4 chars/token). The last RECENT messages are kept
+// verbatim as long as they fit in their reserve; everything else competes.
 
 const RECENT = 6;
-// La reserva de recientes ya no es constante: sale de la presión medida (ver
-// prepare). Sin tope, un solo resultado enorme se come el presupuesto entero.
+// The recent-messages reserve is no longer a constant: it comes out of the
+// measured pressure (see prepare). Without a cap, one huge result eats the
+// entire budget.
 const MAX_MSG_CHARS = 12000;
-// λ y nº de candidatos NO son constantes: ver measureRedundancy() y
-// selectAndEmit(). Un λ fijo destruye información buena cuando el material no
-// es redundante, y 600 candidatos fijos dejan sin mirar la mayor parte del
-// historial en cuanto el presupuesto es grande — que es el caso real.
+// λ and the number of candidates are NOT constants: see measureRedundancy() and
+// selectAndEmit(). A fixed λ destroys good information when the material is not
+// redundant, and a fixed 600 candidates leaves most of the history unlooked-at
+// as soon as the budget is large — which is the real case.
 const RRF_K = 60;
 
-// Sin lista de parada: de eso se encarga la IDF. Se admiten tokens de 2
-// caracteres porque en código los identificadores cortos a veces son justo
-// lo que se busca (`fs`, `db`, `id`).
-// Emite el token COMPUESTO y además sus PARTES.
+// No stoplist: IDF takes care of that. Two-character tokens are allowed
+// because in code the short identifiers are sometimes exactly what is being
+// looked for (`fs`, `db`, `id`).
+// It emits the COMPOUND token and also its PARTS.
 //
-// El partidor anterior estaba afinado para código y en diálogo perdía: exigía
-// empezar por letra —así que «3pm», «2nd» o «5» desaparecían enteros, y en
-// conversación eso son horas, ordinales y fechas— y mantenía `src/utils.js`
-// como UN token, de modo que preguntar por «utils» no casaba con la línea que
-// lo contiene.
+// The previous tokeniser was tuned for code and lost in dialogue: it required
+// starting with a letter — so "3pm", "2nd" or "5" disappeared entirely, and in
+// conversation those are times, ordinals and dates — and it kept
+// `src/utils.js` as ONE token, so asking about "utils" did not match the line
+// that contains it.
 //
-// Medido: cambiar SOLO esto, con todo lo demás igual, explicaba 3,5 de los 4,8
-// puntos que nos separaban de un BM25 con otro partidor en un banco de diálogo.
-// Y en el banco de sesiones de agente subió el recuerdo de hechos del 82,1 % al
-// 94,9 % (presupuesto 3.000) y del 85,9 % al 100 % (16.000). No era la política
-// de empaquetado: era el partidor de palabras.
+// Measured: changing ONLY this, with everything else equal, explained 3.5 of
+// the 4.8 points that separated us from a BM25 with a different tokeniser on a
+// dialogue benchmark. And on the agent-session benchmark it raised fact recall
+// from 82.1% to 94.9% (budget 3,000) and from 85.9% to 100% (16,000). It was
+// not the packing policy: it was the word splitter.
 //
-// La forma compuesta se conserva porque en código ES el identificador y casa
-// exacto; las partes se añaden para el emparejamiento parcial. Se pagan más
-// términos por línea, y de eso ya se encarga la normalización por longitud.
+// The compound form is kept because in code it IS the identifier and it matches
+// exactly; the parts are added for partial matching. You pay for more terms per
+// line, and length normalisation already takes care of that.
 const tokens = s => {
   const out = [], seen = new Set();
   const push = t => { if (t.length >= 2 && !seen.has(t)) { seen.add(t); out.push(t); } };
@@ -86,11 +89,11 @@ const tokens = s => {
   }
   return out;
 };
-// Estimador de tokens. `longitud/4` sirve para prosa pero SUBESTIMA mucho el
-// código: la puntuación densa (`{`, `=>`, `.`, `(`) son tokens de un carácter.
-// Medido, contar solo por longitud hacía que el empaquetador creyera que cabía
-// y se pasara ~1,5× del presupuesto — es decir, el «Too many tokens» que este
-// fichero existe para evitar. Se toma el MAYOR de las dos estimaciones.
+// Token estimator. `length/4` works for prose but badly UNDERESTIMATES code:
+// dense punctuation (`{`, `=>`, `.`, `(`) are one-character tokens. Measured,
+// counting by length alone made the packer believe things fitted and overshoot
+// the budget by ~1.5× — that is, the "Too many tokens" this file exists to
+// prevent. The LARGER of the two estimates is taken.
 const estTok = s => {
   if (!s) return 0;
   const pieces = (s.match(/\w+|[^\w\s]/g) || []).length;
@@ -106,15 +109,15 @@ function clampMsg(m) {
   return { ...m, content: c.slice(0, head) + `\n… [recortado ${c.length - MAX_MSG_CHARS} caracteres] …\n` + c.slice(-tail) };
 }
 
-// BM25 con saturación (k1) y normalización por longitud (b). La IDF sale del
-// propio corpus que se le pasa — ahí está la gracia.
+// BM25 with saturation (k1) and length normalisation (b). The IDF comes out of
+// the very corpus it is handed — that is the whole point.
 //
-// Okapi BM25: Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, «Okapi at
-// TREC-3», TREC-3, 1994. Formulación moderna y justificación de k1/b:
-// Robertson & Zaragoza, «The Probabilistic Relevance Framework: BM25 and
-// Beyond», FnTIR 3(4), 2009 — https://doi.org/10.1561/1500000019
-// La IDF viene de Sparck Jones, Journal of Documentation 28(1), 1972: la idea
-// de que lo raro informa, que es sobre la que se sostiene todo esto.
+// Okapi BM25: Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, "Okapi at
+// TREC-3", TREC-3, 1994. Modern formulation and justification of k1/b:
+// Robertson & Zaragoza, "The Probabilistic Relevance Framework: BM25 and
+// Beyond", FnTIR 3(4), 2009 — https://doi.org/10.1561/1500000019
+// The IDF comes from Sparck Jones, Journal of Documentation 28(1), 1972: the
+// idea that what is rare is what informs, which is what all of this rests on.
 function buildBM25(docs, k1 = 1.2, b = 0.75) {
   const N = docs.length || 1;
   const df = new Map(), tfs = [];
@@ -143,9 +146,9 @@ function buildBM25(docs, k1 = 1.2, b = 0.75) {
 
 const simTokens = s => new Set(((s || '').toLowerCase().match(/[a-z0-9_./-]{2,}/g) || []));
 
-// Redundancia REAL del material, muestreada. Un historial de resultados de
-// herramienta casi idénticos pide penalizar fuerte; una conversación donde cada
-// línea es distinta, casi nada — y ahí un λ alto solo tira información buena.
+// The material's REAL redundancy, sampled. A history of near-identical tool
+// results calls for a hard penalty; a conversation where every line is
+// different, almost none — and there a high λ only throws good information away.
 function measureRedundancy(items, sample = 240) {
   if (items.length < 4) return 0;
   const step = Math.max(1, Math.floor(items.length / sample));
@@ -169,10 +172,10 @@ function cosine(a, b) {
   return (na && nb) ? d / Math.sqrt(na * nb) : 0;
 }
 
-// Fusión por rangos recíprocos (RRF — Cormack, Clarke & Buettcher, SIGIR 2009,
-// https://doi.org/10.1145/1571941.1572114): se mezclan POSICIONES, no
-// puntuaciones, así no hay que calibrar escalas entre un BM25 sin acotar y un
-// coseno en [-1,1].
+// Reciprocal rank fusion (RRF — Cormack, Clarke & Buettcher, SIGIR 2009,
+// https://doi.org/10.1145/1571941.1572114): POSITIONS are mixed, not scores, so
+// there is no need to calibrate scales between an unbounded BM25 and a cosine
+// in [-1,1].
 function rrf(lists, k = RRF_K) {
   const out = new Map();
   for (const list of lists) list.forEach((id, r) => out.set(id, (out.get(id) || 0) + 1 / (k + r + 1)));
@@ -180,24 +183,25 @@ function rrf(lists, k = RRF_K) {
 }
 
 /**
- * CADUCIDAD — el mismo problema que ya resolvimos en el vigilante de carpetas,
- * un piso más arriba.
+ * STALENESS — the same problem we already solved in the folder watcher, one
+ * floor up.
  *
- * El agente lee un fichero en el turno 3 y lo EDITA en el 20. BM25 recupera las
- * dos versiones y la vieja puntúa igual de alto, porque comparte todo el
- * vocabulario con la nueva. El modelo ve contenido obsoleto sin ninguna señal
- * de que lo es — y eso no es ineficiencia, es INCORRECCIÓN: ninguna cantidad de
- * relevancia arregla que el dato sea falso. Medido con una sonda leer→editar→
- * releer (8 semillas): la versión FALSA sobrevivía 8/8; con esto, 0/8, y la
- * verdadera sigue 8/8, sin coste en recall.
+ * The agent reads a file on turn 3 and EDITS it on turn 20. BM25 retrieves both
+ * versions and the old one scores just as high, because it shares all of its
+ * vocabulary with the new one. The model sees stale content with no signal that
+ * it is stale — and that is not inefficiency, it is INCORRECTNESS: no amount of
+ * relevance fixes the fact that the datum is false. Measured with a
+ * read→edit→re-read probe (8 seeds): the FALSE version survived 8/8; with this,
+ * 0/8, and the true one still survives 8/8, at no cost in recall.
  *
- * El objetivo NO viene en el resultado: sale de la llamada del asistente
- * anterior. Se DEGRADA, no se borra — con una salvedad medida: preguntando
- * EXPRESAMENTE por el valor anterior, la vieja vuelve 0 de 8 veces. Está en el
- * conjunto y no se recupera, porque compite entre cientos de líneas de
- * puntuación cero y quién vuelve lo decide la diversidad, no la pregunta.
- * ALCANZABLE NO ES RECUPERABLE: la diferencia entre «ya no es cierto» y «nunca
- * existió» es real en la estructura y aún no en el comportamiento.
+ * The target does NOT come in the result: it comes from the preceding
+ * assistant call. It is DEMOTED, not deleted — with one measured caveat: asking
+ * EXPRESSLY for the previous value, the old one comes back 0 times out of 8. It
+ * is in the set and it does not get retrieved, because it competes among
+ * hundreds of zero-scoring lines and what comes back is decided by diversity,
+ * not by the question. REACHABLE IS NOT RETRIEVABLE: the difference between "it
+ * is no longer true" and "it never existed" is real in the structure and not
+ * yet in the behaviour.
  */
 function markSuperseded(msgs) {
   const lastFor = new Map(), targetOf = new Map();
@@ -215,31 +219,33 @@ function markSuperseded(msgs) {
 }
 
 /**
- * FECHAS ABSOLUTAS AL ESCRIBIR — la otra cara de markSuperseded.
+ * ABSOLUTE DATES AT WRITE TIME — the other face of markSuperseded.
  *
- * «lo desplegamos ayer», escrito en el turno 3, es una MENTIRA en el turno 40.
- * Y esto no lo arregla ninguna perilla de BM25, porque no es un fallo de
- * recuperación: la línea se recupera perfectamente y el dato que lleva es falso.
- * Igual que la caducidad — relevancia perfecta, contenido incorrecto — solo que
- * aquí lo que caduca es la palabra, no el fichero.
+ * "we deployed it yesterday", written on turn 3, is a LIE on turn 40. And no
+ * BM25 knob fixes this, because it is not a retrieval failure: the line is
+ * retrieved perfectly and the datum it carries is false. Same as staleness —
+ * perfect relevance, incorrect content — except that here what goes stale is
+ * the word, not the file.
  *
- * Por eso se resuelve al ESCRIBIR: al indexar todavía se sabe cuándo se dijo.
- * Un turno después, ya no.
+ * That is why it is resolved at WRITE time: while indexing, we still know when
+ * it was said. One turn later, we no longer do.
  *
- *   · Se ANOTA junto al original, no se sustituye: «ayer (2026-08-07)». Si la
- *     resolución se equivoca, el modelo sigue viendo la frase de verdad.
- *   · La referencia es la marca DEL TURNO (`m.ts`/time/timestamp/date). Sin
- *     marca y sin `now` explícito NO SE ANOTA: inventar una fecha es justo el
- *     fallo que esto viene a quitar.
- *   · Precisión honesta: lo que el idioma dice con precisión de día lleva un
- *     día; lo de semana o mes lleva el rango de la semana o el mes.
- *   · ⚠️ No se tocan vallas de código ni resultados de herramienta: un
- *     `2026-08-07` dentro de un diff no es una referencia temporal.
+ *   · It is ANNOTATED next to the original, not substituted: "ayer
+ *     (2026-08-07)". If the resolution gets it wrong, the model still sees the
+ *     real sentence.
+ *   · The reference is the TURN's stamp (`m.ts`/time/timestamp/date). With no
+ *     stamp and no explicit `now`, NOTHING IS ANNOTATED: making up a date is
+ *     precisely the failure this came to remove.
+ *   · Honest precision: what the language states with day precision gets a day;
+ *     what it states by week or month gets the range of that week or month.
+ *   · ⚠️ Code fences and tool results are left alone: a `2026-08-07` inside a
+ *     diff is not a temporal reference.
  *
- * Medido con sonda propia (el banco de hechos no puede ver esto: pregunta por
- * identificadores), 32 sesiones reales, la frase en cuatro posiciones distintas:
- * la línea se recupera 100 % · la FECHA está sin anotar 0 % · anotada 100 % ·
- * fecha falsa (si se usara «ahora») 0 %. Coste +7 tokens sobre 2.223.
+ * Measured with our own probe (the fact benchmark cannot see this: it asks
+ * about identifiers), 32 real sessions, the sentence in four different
+ * positions: the line is retrieved 100% · the DATE is there unannotated 0% ·
+ * annotated 100% · false date (had "now" been used) 0%. Cost: +7 tokens on
+ * top of 2,223.
  */
 const DAY = 86400000;
 const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -252,7 +258,7 @@ const DOW = { domingo: 0, lunes: 1, martes: 2, miércoles: 3, miercoles: 3, juev
 const WORD_N = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
                  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 const asNum = s => (/^\d+$/.test(s) ? parseInt(s, 10) : (WORD_N[s.toLowerCase()] || null));
-// Precisión honesta: día → día, semana → rango de la semana, mes → mes.
+// Honest precision: day → day, week → range of the week, month → month.
 function shiftBy(ref, n, unit, sign) {
   if (n == null || n > 500) return null;
   const u = unit.toLowerCase()[0];
@@ -262,10 +268,11 @@ function shiftBy(ref, n, unit, sign) {
   if (u === 'a' || u === 'y') return String(plusMonths(ref, sign * 12 * n).getFullYear());
   return null;
 }
-// dir<0 la anterior estricta · dir>0 la siguiente · dir=0 la más reciente
-// contando hoy. El día suelto («el lunes») es AMBIGUO en los dos idiomas: se
-// resuelve como retrospectivo porque en una bitácora de trabajo casi siempre lo
-// es. Es la única regla de aquí que puede fallar, y por eso el original se queda.
+// dir<0 the strictly previous one · dir>0 the next one · dir=0 the most recent
+// one, counting today. A bare weekday ("el lunes") is AMBIGUOUS in both
+// languages: it resolves as backward-looking because in a work log it almost
+// always is. It is the only rule here that can be wrong, and that is why the
+// original stays.
 function nearestDow(ref, target, dir) {
   const cur = ref.getDay();
   if (dir > 0) { const f = (target - cur + 7) % 7; return plusDays(ref, f || 7); }
@@ -276,10 +283,10 @@ const NUM_P = '\\d{1,3}|un[ao]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez
 const UNIT_P = 'd[ií]as?|semanas?|mes(?:es)?|años?|anos?|days?|weeks?|months?|years?';
 const DOW_ES = 'lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo';
 const DOW_EN = 'monday|tuesday|wednesday|thursday|friday|saturday|sunday';
-// Orden = precedencia: la alternancia se queda con la PRIMERA que encaja.
+// Order = precedence: the alternation keeps the FIRST one that fits.
 const WHEN = [
-  // «por la mañana» no es «mañana»: se reconoce para NO anotarla y para que la
-  // regla corta no llegue a verla.
+  // "por la mañana" (in the morning) is not "mañana" (tomorrow): it is matched
+  // so that it is NOT annotated, and so the short rule never gets to see it.
   ['\\b(?:por|de|a|en|desde|hasta)\\s+la\\s+mañana\\b|\\b(?:esta|una|cada|toda\\s+la|la)\\s+mañana\\b', () => null],
   ['\\bantes\\s+de\\s+ayer\\b|\\banteayer\\b|\\bthe\\s+day\\s+before\\s+yesterday\\b', (m, r) => isoDay(plusDays(r, -2))],
   ['\\bpasado\\s+mañana\\b|\\bthe\\s+day\\s+after\\s+tomorrow\\b', (m, r) => isoDay(plusDays(r, 2))],
@@ -297,8 +304,8 @@ const WHEN = [
     (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], /pasado/i.test(m[2]) ? -1 : 1))],
   [`\\b(last|next|this)\\s+(${DOW_EN})\\b`,
     (m, r) => isoDay(nearestDow(r, DOW[m[2].toLowerCase()], /last/i.test(m[1]) ? -1 : (/next/i.test(m[1]) ? 1 : 0)))],
-  // Sin modificador hace falta artículo o preposición: un «Monday» suelto puede
-  // ser un nombre propio o un fichero.
+  // With no modifier, an article or preposition is required: a bare "Monday"
+  // may be a proper name or a file.
   [`\\bel\\s+(${DOW_ES})\\b`, (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], 0))],
   [`\\bon\\s+(${DOW_EN})\\b`, (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], 0))],
   ['\\banoche\\b|\\blast\\s+night\\b', (m, r) => isoDay(plusDays(r, -1))],
@@ -308,13 +315,13 @@ const WHEN = [
 ];
 const WHEN_RE = new RegExp(WHEN.map(w => `(?:${w[0]})`).join('|'), 'gi');
 const WHEN_ONE = WHEN.map(w => new RegExp(`^(?:${w[0]})$`, 'i'));
-// Vallas, acentos graves y valla sin cerrar (mensaje a medio llegar).
+// Fences, backticks, and an unclosed fence (a message still arriving).
 const FENCE = /```[\s\S]*?```|```[\s\S]*$|~~~[\s\S]*?~~~|`[^`\n]+`/g;
 
 export function annotateDates(text, refMs) {
   if (!text) return text;
   WHEN_RE.lastIndex = 0;
-  if (!WHEN_RE.test(text)) return text;       // barrido único: el caso normal sale por aquí
+  if (!WHEN_RE.test(text)) return text;       // single sweep: the normal case leaves here
   const ref = new Date(refMs);
   if (isNaN(ref.getTime())) return text;
   const parts = []; let last = 0, f;
@@ -326,10 +333,11 @@ export function annotateDates(text, refMs) {
   parts.push([text.slice(last), false]);
   return parts.map(([s, isCode]) => isCode ? s : s.replace(WHEN_RE, (hit, ...rest) => {
     const whole = rest[rest.length - 1], at = rest[rest.length - 2];
-    if (/^\s*\(\d{4}-\d{2}/.test(whole.slice(at + hit.length))) return hit;      // idempotente
-    // `today()`, `memory::today`, `hoy_str` o `ayer.js` son CÓDIGO aunque lleguen
-    // sin valla: una tool-call sin valla lleva rutas, y anotar dentro de una ruta
-    // la rompe. Un punto de final de frase («lo hicimos ayer.») sí se anota.
+    if (/^\s*\(\d{4}-\d{2}/.test(whole.slice(at + hit.length))) return hit;      // idempotent
+    // `today()`, `memory::today`, `hoy_str` or `ayer.js` are CODE even when they
+    // arrive without a fence: an unfenced tool call carries paths, and
+    // annotating inside a path breaks it. A sentence-final full stop ("lo
+    // hicimos ayer.") does get annotated.
     if (/[.:_/\\]$/.test(whole.slice(0, at)) || /^[(_]|^\.\w/.test(whole.slice(at + hit.length))) return hit;
     for (let i = 0; i < WHEN.length; i++) {
       const g = WHEN_ONE[i].exec(hit);
@@ -349,15 +357,15 @@ const asTime = v => {
   return Number.isFinite(t) ? t : null;
 };
 
-// Historial con las referencias temporales resueltas. Devuelve el MISMO array si
-// no hubo nada que anotar, para no pagar copias en el caso normal.
+// History with the temporal references resolved. Returns the SAME array if
+// there was nothing to annotate, so the normal case pays for no copies.
 function datedHistory(history, now) {
   let touched = false;
   const out = history.map(m => {
     const c = m.content || '';
-    if (!c || c.startsWith('[resultado')) return m;          // salida de herramienta: intocable
+    if (!c || c.startsWith('[resultado')) return m;          // tool output: untouchable
     const ref = asTime(m.ts ?? m.time ?? m.timestamp ?? m.date ?? m.createdAt) ?? asTime(now);
-    if (ref == null) return m;                                // sin fecha conocida NO se inventa
+    if (ref == null) return m;                                // no known date → nothing is invented
     const a = annotateDates(c, ref);
     if (a === c) return m;
     touched = true;
@@ -367,19 +375,20 @@ function datedHistory(history, now) {
 }
 
 /**
- * AGREGACIÓN — lo que no está en ninguna línea.
+ * AGGREGATION — what is in no line at all.
  *
- * «¿Cuántos ficheros has tocado?» no está repartido entre cuarenta líneas: es
- * que NO EXISTE la línea que buscar. Ningún top-k la encuentra, y no por
- * puntuar mal, sino por construcción. Como las fechas, se resuelve al ESCRIBIR:
- * contando según pasan los resultados. Contador y nada más — sin modelo, sin
- * resumen generado, sin juicio: es un recuento, y se lee como se lee `wc -l`.
+ * "How many files have you touched?" is not spread across forty lines: it is
+ * that the line to look for DOES NOT EXIST. No top-k finds it, and not because
+ * it scores badly, but by construction. Like the dates, it is resolved at WRITE
+ * time: counting as the results go past. A counter and nothing else — no model,
+ * no generated summary, no judgement: it is a tally, and it reads the way
+ * `wc -l` reads.
  *
- * El objetivo de cada llamada sale de la llamada del ASISTENTE (el resultado no
- * lo lleva), igual que en markSuperseded, y la familia se decide por el VERBO
- * del nombre de la herramienta: los productos que comparten este diseño tienen
- * herramientas distintas (`code.read` / `fs.read`) y una lista cerrada de
- * nombres envejecería con el primer producto nuevo.
+ * The target of each call comes from the ASSISTANT's call (the result does not
+ * carry it), same as in markSuperseded, and the family is decided by the VERB
+ * in the tool's name: the products that share this design have different tools
+ * (`code.read` / `fs.read`) and a closed list of names would go stale with the
+ * first new product.
  */
 const V_EDIT = /^(?:write|edit|create|save|patch|append|delete|remove|rm|move|rename|copy)$/;
 const V_READ = /^(?:read|view|open|cat|show)$/;
@@ -396,7 +405,7 @@ export function buildLedger(msgs) {
       for (const line of c.split('\n')) {
         if (!ERR.test(line)) continue;
         errN++; errs.set(line.trim().slice(0, 90), i);
-        break;                       // se cuentan RESULTADOS que fallaron, no líneas de traza
+        break;                       // we count failed RESULTS, not traceback lines
       }
       return;
     }
@@ -411,40 +420,41 @@ export function buildLedger(msgs) {
       else if (V_RUN.test(verb)) ran.set(m[2], i);
     }
   });
-  // Un fichero editado no vuelve a contarse como leído: «cuántos has tocado» no
-  // puede contar dos veces el mismo fichero.
+  // An edited file is not counted as read as well: "how many have you touched"
+  // cannot count the same file twice.
   for (const k of edited.keys()) read.delete(k);
   return { read, edited, ran, errs, errN };
 }
 
 /**
- * La tarjeta, acotada. Tres reglas, y las tres salen de medir:
+ * The card, bounded. Three rules, and all three come from measuring:
  *
- *  1. El RECUENTO va siempre y es el total de verdad; la enumeración se recorta.
- *     Un recuento truncado que PARECE completo («8 ficheros» cuando fueron 200)
- *     es peor que no dar ninguno, así que el número va aparte y la lista dice
- *     «+N más». Cuando no cabe ni una entrada, la fila se queda en el número.
- *  2. El techo sale del PRESUPUESTO, no de una constante.
- *  3. Se le quita sitio a la fila que más TOKENS gasta, no a la que más entradas
- *     tiene: dos rutas de error largas cuestan más que ocho nombres cortos.
- *     Medido (32 sesiones, presupuesto 3.000, cobertura de los ficheros
- *     realmente editados, a igual coste ~148 tokens): recortar por número de
- *     entradas 67,7 % · recortar por coste 90,6 %. Sin tarjeta, 58,9 %.
- *     Y con el techo al 3 % baja a 57,3 %: una tarjeta demasiado apretada da el
- *     recuento gratis pero su enumeración ESTORBA.
+ *  1. The TALLY always goes in and is the true total; the enumeration is what
+ *     gets trimmed. A truncated tally that LOOKS complete ("8 files" when there
+ *     were 200) is worse than giving none at all, so the number goes separately
+ *     and the list says "+N más". When not even one entry fits, the row is left
+ *     as just the number.
+ *  2. The ceiling comes from the BUDGET, not from a constant.
+ *  3. Room is taken from the row that spends the most TOKENS, not from the one
+ *     with the most entries: two long error paths cost more than eight short
+ *     names. Measured (32 sessions, budget 3,000, coverage of the files
+ *     actually edited, at equal cost of ~148 tokens): trimming by number of
+ *     entries 67.7% · trimming by cost 90.6%. With no card, 58.9%.
+ *     And with the ceiling at 3% it drops to 57.3%: a card squeezed too tight
+ *     gives the tally for free but its enumeration GETS IN THE WAY.
  *
- * ⚠️ La tarjeta NO es gratis: en el banco de hechos de siempre (32 sesiones
- * reales) cuesta −0,7 puntos a presupuesto 3.000 (65,7 % → 65,0 %) y ±0,0 a
- * 16.000. Por eso va tras bandera y apagada: quien pregunte «cuántos ficheros»
- * la quiere; quien no, está pagando por nada.
+ * ⚠️ The card is NOT free: on the usual fact benchmark (32 real sessions) it
+ * costs −0.7 points at budget 3,000 (65.7% → 65.0%) and ±0.0 at 16,000. That is
+ * why it sits behind a flag and off: whoever asks "how many files" wants it;
+ * whoever does not is paying for nothing.
  */
 function summaryCard(L, maxTok) {
   const rows = [['ficheros leídos', L.read], ['ficheros editados', L.edited],
                 ['comandos', L.ran], ['errores', L.errs]];
   const totals = [L.read.size, L.edited.size, L.ran.size, L.errN];
   if (!totals.some(Boolean)) return null;
-  // Las MÁS RECIENTES primero: si hay que recortar, lo que se acaba de tocar es
-  // lo que más probablemente van a preguntar.
+  // MOST RECENT first: if trimming is needed, whatever was just touched is what
+  // they are most likely to ask about.
   const listed = rows.map(([, m]) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]));
   const caps = rows.map(() => 8);
   const line = i => {
@@ -470,46 +480,49 @@ function summaryCard(L, maxTok) {
   return { role: 'user', content: text };
 }
 
-// Prepara el estado común: reserva de recientes, pregunta viva, líneas y BM25.
+// Prepares the shared state: recent reserve, live question, lines and BM25.
 function prepare(history, budgetTokens, opts = {}) {
-  // Lo que se resuelve al ESCRIBIR va antes que nada, porque cambia el material
-  // que se va a puntuar y lo que va a caber: las fechas se anotan sobre el
-  // historial, y la tarjeta se cobra del presupuesto ANTES de repartirlo — que
-  // es lo que la hace incondicional sin romper el contrato de tokens.
+  // Whatever is resolved at WRITE time goes before anything else, because it
+  // changes the material that is about to be scored and what is going to fit:
+  // the dates are annotated over the history, and the card is charged against
+  // the budget BEFORE it is shared out — which is what makes it unconditional
+  // without breaking the token contract.
   if (opts.dates !== false) history = datedHistory(history, opts.now);
   const card = opts.summary ? summaryCard(buildLedger(history),
     Math.max(24, Math.floor(budgetTokens * (opts.summaryFrac || 0.05)))) : null;
   const cardTok = card ? estTok(card.content) + 4 : 0;
   budgetTokens = Math.max(1, budgetTokens - cardTok);
 
-  // PRESIÓN de compresión: qué fracción del historial cabe. Todas las perillas
-  // que dependen del régimen salen de aquí, no de constantes — con 200k de
-  // historial contra 32k de presupuesto no manda lo mismo que con 5k contra 3k.
+  // Compression PRESSURE: what fraction of the history fits. Every knob that
+  // depends on the regime comes from here, not from constants — 200k of history
+  // against a 32k budget is not ruled by the same thing as 5k against 3k.
   const historyTok = history.reduce((s, m) => s + tokEstimate(m), 0);
   const pressure = Math.max(0, Math.min(1, budgetTokens / (historyTok || 1)));
-  // Con holgura conservar los últimos turnos sale barato; con agobio hay que
-  // dejarle sitio a la BÚSQUEDA, que es lo que trae la línea de hace 30 turnos.
+  // With room to spare, keeping the last turns is cheap; under strain you have
+  // to leave room for the SEARCH, which is what brings back the line from 30
+  // turns ago.
   const recentFrac = 0.35 + 0.45 * pressure;
-  // La recencia solo desempata BAJO PRESIÓN. Medido en un barrido: con agobio
-  // (16× de contexto sobre presupuesto) suma +11 puntos, porque casi ninguna
-  // línea tiene relevancia y lo nuevo es la única apuesta que queda. Con
-  // holgura RESTA −8: ahí gana el orden del documento, que mantiene juntos los
-  // tramos, y un fragmento contiguo vale más que líneas nuevas sueltas.
+  // Recency only breaks ties UNDER PRESSURE. Measured in a sweep: under strain
+  // (16× as much context as budget) it adds +11 points, because almost no line
+  // has any relevance and what is new is the only bet left. With room to spare
+  // it SUBTRACTS −8: there document order wins, because it keeps the stretches
+  // together, and one contiguous fragment is worth more than scattered new lines.
   const recTie = pressure < 0.25;
-  // La cabecera va SIEMPRE, sin puerta: con la ventana elástica dejó de ser
-  // cierto que "con holgura el encargo sobrevive solo" — sobrevivía porque
-  // rellenábamos hasta el borde. Medido, al dejar de rellenar caía del 100 % al
-  // 0 % a presupuesto 16.000. Era un accidente del relleno, no tener sitio.
+  // The head goes in ALWAYS, with no gate: with the elastic window it stopped
+  // being true that "with room to spare the brief survives on its own" — it
+  // survived because we were filling right up to the edge. Measured, once we
+  // stopped filling it fell from 100% to 0% at budget 16,000. It was an
+  // accident of the padding, not of having room.
 
-  // ── RESERVA DE COLA — es un SUELO, no solo un techo ────────────────────────
-  // Parar en el primer mensaje que no cabe convierte la reserva en un tope y no
-  // en una garantía: medido, con presupuesto 3.000 la cola se quedaba con el
-  // 3-5 % en vez del ~38 % reservado, porque UN resultado de herramienta grande
-  // en la penúltima posición bloqueaba todo lo anterior. Los últimos turnos son
-  // lo que el modelo necesita sí o sí para saber dónde está, y eso no puede
-  // depender de que el turno de antes fuera voluminoso.
-  // Mientras no se alcance el suelo (10 %), el mensaje que no cabe se TRUNCA
-  // por el medio en vez de descartarse. Por encima, comportamiento de siempre.
+  // ── TAIL RESERVE — it is a FLOOR, not just a ceiling ───────────────────────
+  // Stopping at the first message that does not fit turns the reserve into a cap
+  // rather than a guarantee: measured, at budget 3,000 the tail was getting
+  // 3-5% instead of the ~38% reserved, because ONE big tool result in the
+  // second-to-last position blocked everything before it. The last turns are
+  // what the model absolutely needs in order to know where it is, and that
+  // cannot depend on the preceding turn having been bulky.
+  // Until the floor (10%) is reached, a message that does not fit is TRUNCATED
+  // through the middle instead of discarded. Above it, the usual behaviour.
   const reserve = Math.floor(budgetTokens * recentFrac);
   const floorTok = Math.floor(budgetTokens * 0.05);
   const recent = []; let used = 0;
@@ -529,32 +542,32 @@ function prepare(history, budgetTokens, opts = {}) {
   let old = history.slice(0, history.length - recent.length);
   if (!old.length || used >= budgetTokens) return { done: true, recent, used, head: [], card, budget: budgetTokens };
 
-  // ── RESERVA DE CABECERA ────────────────────────────────────────────────────
-  // Los PRIMEROS mensajes se conservan literales y SIN puntuar, igual que los
-  // últimos, y solo bajo presión (misma puerta que la recencia, misma razón).
+  // ── HEAD RESERVE ───────────────────────────────────────────────────────────
+  // The FIRST messages are kept verbatim and UNSCORED, just like the last ones,
+  // and only under pressure (same gate as recency, same reason).
   //
-  // El arranque lleva el ENCARGO: qué hay que hacer, con qué restricciones. El
-  // resto de la sesión lo da por sabido, así que nadie lo repite — y sin
-  // repeticiones no hay solape léxico con la pregunta de ahora, o sea que BM25
-  // no puede rescatarlo por mucho que importe. Es el único contenido que el
-  // agente NO puede reconstruir mirando el código.
+  // The opening carries the BRIEF: what has to be done, under what constraints.
+  // The rest of the session takes it as given, so nobody repeats it — and with
+  // no repetitions there is no lexical overlap with the current question, which
+  // means BM25 cannot rescue it no matter how much it matters. It is the only
+  // content the agent CANNOT reconstruct by looking at the code.
   //
-  // Respaldo externo: es el resultado central de StreamingLLM (Xiao, Tian, Chen,
-  // Han & Lewis, ICLR 2024, https://arxiv.org/abs/2309.17453) — los primeros
-  // tokens actúan de SUMIDERO de atención y absorben el 45-55 % de la masa.
-  // Un recuperador puro no puede ver eso: no es una propiedad del texto, sino
-  // de cómo el modelo lo usa.
+  // External backing: it is the central result of StreamingLLM (Xiao, Tian,
+  // Chen, Han & Lewis, ICLR 2024, https://arxiv.org/abs/2309.17453) — the first
+  // tokens act as attention SINKS and absorb 45-55% of the mass. A pure
+  // retriever cannot see that: it is not a property of the text, but of how the
+  // model uses it.
   //
-  // Medido (A/B mismo código, 8 semillas, sonda que pregunta por el encargo a
-  // mitad de sesión):
-  //     presupuesto  3.000:  el encargo sobrevive   0 % →  100 %
-  //     presupuesto 16.000:  el encargo sobrevive 100 % →  100 %
-  //     hechos de media sesión: 85,7 % → 85,7 %  ·  91,1 % → 91,1 %
-  // O sea: rescata el encargo de nunca a siempre y NO cuesta nada.
-  // Cabecera DESACTIVADA: ayudaba en sesiones de agente (el encargo original
-  // pasaba de 0/5 a 5/5) pero en diálogo no hay encargo que proteger y la
-  // reserva cobra sin dar nada — en LoCoMo baja el recall de evidencia del
-  // 62,5 % al 56,2 % con los mismos tokens. Poner 0.05 para reactivarla.
+  // Measured (A/B on the same code, 8 seeds, a probe asking about the brief
+  // halfway through the session):
+  //     budget  3,000:  the brief survives   0% →  100%
+  //     budget 16,000:  the brief survives 100% →  100%
+  //     mid-session facts: 85.7% → 85.7%  ·  91.1% → 91.1%
+  // That is: it rescues the brief from never to always and costs NOTHING.
+  // Head reserve DISABLED: it helped in agent sessions (the original brief went
+  // from 0/5 to 5/5) but in dialogue there is no brief to protect and the
+  // reserve charges without giving anything back — on LoCoMo it drops evidence
+  // recall from 62.5% to 56.2% at the same token count. Set 0.05 to re-enable.
   const headReserve = 0;
   const head = []; let headUsed = 0;
   for (let i = 0; i < old.length; i++) {
@@ -566,9 +579,9 @@ function prepare(history, budgetTokens, opts = {}) {
   used += headUsed;
   if (!old.length || used >= budgetTokens) return { done: true, recent, used, head, card, budget: budgetTokens };
 
-  // La pregunta VIVA: el último turno de usuario que no sea un resultado de
-  // herramienta. Es contra esto que se puntúa, no contra la tarea inicial —
-  // lo relevante cambia en cada turno.
+  // The LIVE question: the last user turn that is not a tool result. This is
+  // what everything is scored against, not the initial task — what is relevant
+  // changes on every turn.
   const query = [...history].reverse().find(m =>
     m.role === 'user' && !(m.content || '').startsWith('[resultado'))?.content || '';
 
@@ -584,8 +597,8 @@ function prepare(history, budgetTokens, opts = {}) {
   return { done: false, recent, old, used, items, query, recTie, pressure, head, card, budget: budgetTokens };
 }
 
-// Selección bajo un único presupuesto global, con MMR, y emisión con marcas de
-// omisión para que el modelo sepa que falta algo.
+// Selection under a single global budget, with MMR, and emission with omission
+// markers so that the model knows something is missing.
 function selectAndEmit(ctx, budgetTokens) {
   const { recent, old, items } = ctx;
   const head = ctx.head || [];
@@ -597,8 +610,10 @@ function selectAndEmit(ctx, budgetTokens) {
   const pool = [...items].sort((a, b) => b.score - a.score);
   const keep = new Set();
 
-  // MMR: al elegir, penalizar el parecido con lo ya elegido. Es lo único que
-  // mide por encima de BM25 a secas (+8,9 puntos).
+  // MMR: when choosing, penalise similarity to what has already been chosen. It
+  // is the only thing that measures above plain BM25 — and not by much:
+  // +2.4 points at full scale. A 3-seed smoke test said +8.9 and that was
+  // seed noise; the header carries the honest figure.
   const lambda = Math.max(0.15, Math.min(0.8, 2 * measureRedundancy(pool)));
   const nCand = Math.max(400, Math.min(8000, Math.round(budgetTokens / 6)));
   const cand = pool.slice(0, nCand);
@@ -614,38 +629,38 @@ function selectAndEmit(ctx, budgetTokens) {
     }
     remaining.delete(best);
     const it = byId.get(best), c = cost(it);
-    if (it.score < 10) continue;                 // el MMR diversifica DENTRO de lo relevante
+    if (it.score < 10) continue;                 // MMR diversifies WITHIN what is relevant
     if (used + c > budgetTokens) continue;
     keep.add(best); used += c;
     const bs = tok.get(best);
     for (const id of remaining) maxSim.set(id, Math.max(maxSim.get(id), jaccard(tok.get(id), bs)));
   }
-  // VENTANA ELÁSTICA: el presupuesto es un TECHO, no una cuota que agotar. Sin
-  // esto, el 38 % del presupuesto a 3.000 y el 56 % a 16.000 se iba en líneas
-  // sin una sola palabra en común con la pregunta. Y lo irrelevante no es
-  // lastre neutro: recuperar bien BATE al contexto completo (F1 28,09 vs
-  // 22,56), o sea que rellenar hasta el borde reintroduce a mano lo que la
-  // compresión venía a quitar. La ventana se para cuando se acaba la evidencia
-  // (estrato ≥ 10), no cuando se acaban los tokens.
-  // ⚠️ Es un INTERCAMBIO: gratis con presupuesto apretado (el de los
-  // productos), pero a 32.000 ahorra el 60 % de tokens a costa de 8,9 puntos de
-  // presencia del dato. Que eso compense depende de si menos ruido mejora la
-  // respuesta, y este banco mide presencia, no calidad.
+  // ELASTIC WINDOW: the budget is a CEILING, not a quota to be used up. Without
+  // this, 38% of the budget at 3,000 and 56% at 16,000 went on lines without a
+  // single word in common with the question. And what is irrelevant is not
+  // neutral ballast: retrieving well BEATS the full context (F1 28.09 vs
+  // 22.56), which means filling right up to the edge puts back by hand exactly
+  // what the compression came to remove. The window stops when the evidence
+  // runs out (stratum ≥ 10), not when the tokens run out.
+  // ⚠️ It is a TRADE-OFF: free with a tight budget (the products' case), but at
+  // 32,000 it saves 60% of the tokens at the cost of 8.9 points of the datum
+  // being present. Whether that pays off depends on whether less noise improves
+  // the answer, and this benchmark measures presence, not quality.
   for (const it of pool) {
     const id = idOf(it); if (keep.has(id)) continue;
-    if (it.score < 10) break;                    // se acabó lo relevante
+    if (it.score < 10) break;                    // the relevant material has run out
     const c = cost(it);
     if (used + c > budgetTokens) continue;
     keep.add(id); used += c;
   }
 
-  // ── CONTRATO DE PRESUPUESTO ────────────────────────────────────────────────
-  // El coste por línea ignora la sobrecarga por mensaje y las marcas de omisión,
-  // así que la suma de costes NO es lo que se emite. Sin esta corrección el
-  // empaquetador se pasa ~1,6-1,8× de lo que se le pide — medido — y eso es
-  // precisamente el «Too many tokens» que este fichero existe para evitar.
-  // Se mide el tamaño REAL emitido y se devuelven las líneas peor puntuadas
-  // hasta que la salida cabe de verdad.
+  // ── BUDGET CONTRACT ────────────────────────────────────────────────────────
+  // The per-line cost ignores the per-message overhead and the omission
+  // markers, so the sum of the costs is NOT what gets emitted. Without this
+  // correction the packer overshoots what it was asked for by ~1.6-1.8× —
+  // measured — and that is precisely the "Too many tokens" this file exists to
+  // prevent. The REAL emitted size is measured and the worst-scoring lines are
+  // handed back until the output genuinely fits.
   const emit = () => {
     let t = recent.reduce((s, m) => s + tokEstimate(m), 0) + head.reduce((s, m) => s + tokEstimate(m), 0);
     let open = 0;
@@ -692,17 +707,17 @@ function selectAndEmit(ctx, budgetTokens) {
     packed.push({ role: m.role, content: out.join('\n') });
   });
   if (droppedMsgs) packed.push({ role: 'user', content: `[…${droppedMsgs} mensajes antiguos omitidos…]` });
-  // La tarjeta va PROTEGIDA, como la cabecera y la cola, y por su mismo motivo:
-  // no compite por relevancia porque no puede ganar — es un recuento, no
-  // comparte vocabulario con nada y BM25 la tiraría siempre, que es justo el
-  // fallo que viene a tapar. Va pegada a los últimos turnos, con la pregunta
-  // viva, no al principio.
+  // The card is PROTECTED, like the head and the tail, and for the very same
+  // reason: it does not compete on relevance because it cannot win — it is a
+  // tally, it shares vocabulary with nothing, and BM25 would drop it every
+  // time, which is exactly the failure it came to cover. It sits right next to
+  // the last turns, with the live question, not at the beginning.
   return [...head, ...packed, ...(ctx.card ? [ctx.card] : []), ...recent];
 }
 
 /**
- * Empaqueta el historial en `budgetTokens` — vía léxica, síncrona.
- * Es la que se usa por defecto: no necesita modelo, ni red, ni nada.
+ * Packs the history into `budgetTokens` — lexical path, synchronous.
+ * This is the one used by default: it needs no model, no network, nothing.
  */
 export function packHistory(history, budgetTokens = 2200, opts = {}) {
   if (!history.length) return history;
@@ -710,52 +725,55 @@ export function packHistory(history, budgetTokens = 2200, opts = {}) {
   if (ctx.done) return [...(ctx.head || []), ...(ctx.card ? [ctx.card] : []), ...ctx.recent];
   const max = ctx.items.reduce((m, it) => Math.max(m, it.bm), 0) || 1;
   for (const it of ctx.items) {
-    // Dos estratos separados por 10 — más de lo que la penalización MMR (≤0.5)
-    // puede recorrer, así que una línea sin relevancia NUNCA adelanta a una que
-    // sí la tiene. Dentro de cada estrato: BM25 arriba, desempate abajo.
+    // Two strata separated by 10 — more than the MMR penalty (≤0.5) can span,
+    // so a line with no relevance NEVER overtakes one that has some. Within
+    // each stratum: BM25 on top, tie-break underneath.
     it.score = (it.bm > 0 && !it.stale) ? 10 + it.bm / max : (ctx.recTie ? it.rec : 0);
-    if (it.first) it.score = Math.max(it.score, 0.5);   // cabecera de procedencia
+    if (it.first) it.score = Math.max(it.score, 0.5);   // provenance header
   }
   return selectAndEmit(ctx, ctx.budget);
 }
 
 /**
- * Igual, más una segunda opinión SEMÁNTICA fusionada por rangos.
+ * The same, plus a second SEMANTIC opinion fused by rank.
  *
- * `embed(textos) -> vectores`. Se codifica por bloques de líneas, no línea a
- * línea, porque codificar cada línea es prohibitivo y la señal sobrevive al
- * troceado.
+ * `embed(texts) -> vectors`. Encoding happens per block of lines, not line by
+ * line, because encoding every line is prohibitive and the signal survives the
+ * chunking.
  *
- * ★ El tamaño de bloque es FIJO a propósito, y es lo que hace que la caché
- * sirva. Con bloques fijos las fronteras no se mueven al crecer el historial
- * (0-4, 5-9, …), así que el texto de un bloque ya codificado NO cambia nunca y
- * un turno sólo paga lo NUEVO. Si el tamaño se DERIVA del número de líneas,
- * cada vez que ese número cruza un umbral cambian TODOS los bloques y la caché
- * falla entera — medido, el turno pasa a encarecerse según avanza la sesión en
- * vez de abaratarse. Es el «indexar al escribir» del que depende todo esto. Si no se pasa `embed`, o si falla, cae limpiamente a la vía léxica.
+ * ★ The block size is FIXED on purpose, and that is what makes the cache worth
+ * anything. With fixed blocks the boundaries do not move as the history grows
+ * (0-4, 5-9, …), so the text of an already-encoded block NEVER changes and a
+ * turn only pays for what is NEW. If the size is DERIVED from the number of
+ * lines, then every time that number crosses a threshold ALL the blocks change
+ * and the cache misses entirely — measured, the turn starts getting more
+ * expensive as the session advances instead of cheaper. It is the "index at
+ * write time" that all of this depends on. If no `embed` is passed, or if it
+ * fails, it falls back cleanly to the lexical path.
  *
- * Por qué fusionar y no sustituir: medido, BM25 y los embeddings EMPATAN
- * en global, pero NO hacen el mismo trabajo. Partiendo las preguntas por solape
- * de vocabulario con la respuesta: sin solape, embeddings 24,28 > BM25 18,60;
- * con solape, BM25 29,33 > embeddings 23,58. La fusión por rangos se queda con
- * los DOS (24,05 / 32,73). Lo semántico no sustituye al léxico: le cubre el
- * punto ciego.
+ * Why fuse instead of replace: measured, BM25 and the embeddings TIE overall,
+ * but they do NOT do the same job. Splitting the questions by vocabulary
+ * overlap with the answer: with no overlap, embeddings 24.28 > BM25 18.60; with
+ * overlap, BM25 29.33 > embeddings 23.58. Rank fusion keeps BOTH (24.05 /
+ * 32.73). The semantic side does not replace the lexical one: it covers its
+ * blind spot.
  */
-// El lado semántico va tras bandera y APAGADO por defecto. La ganancia es real
-// (+4,50 F1) pero el precio no es despreciable y depende del equipo de quien lo
-// usa: son ~235 MB la primera vez, y sin WebGPU el turno se encarece siempre.
-// Cableado, probado, y se enciende a petición. Con la bandera apagada embed.js
-// —y con él transformers.js y el modelo— NI SE IMPORTA: coste exactamente cero.
+// The semantic side sits behind a flag and is OFF by default. The gain is real
+// (+4.50 F1) but the price is not negligible and it depends on whoever is
+// running it: ~235 MB the first time, and without WebGPU every turn gets more
+// expensive, always. Wired up, tested, and switched on on request. With the
+// flag off, embed.js — and with it transformers.js and the model — IS NOT EVEN
+// IMPORTED: exactly zero cost.
 //   localStorage.setItem('elffuss.semantic', 'on')
 function semanticoOn() {
   try { return localStorage.getItem('elffuss.semantic') === 'on'; } catch { return false; }
 }
 
-// La TARJETA DE RECUENTO también va tras bandera, y por lo mismo: cuesta ~150
-// tokens del presupuesto y −0,7 puntos de recall a presupuesto 3.000 (nada a
-// 16.000). A cambio el recuento pasa del 0 % al 100 % y la enumeración de lo
-// editado del 58,9 % al 90,6 %. Compensa en la sesión que acaba con «hazme la
-// lista de lo que tocaste»; en las demás se paga por nada.
+// The TALLY CARD is also behind a flag, and for the same reason: it costs ~150
+// tokens of the budget and −0.7 points of recall at budget 3,000 (nothing at
+// 16,000). In exchange the tally goes from 0% to 100% and the enumeration of
+// what was edited from 58.9% to 90.6%. It pays off in the session that ends
+// with "give me the list of what you touched"; in the rest you pay for nothing.
 //   localStorage.setItem('elffuss.resumen', 'on')
 function resumenOn() {
   try { return localStorage.getItem('elffuss.resumen') === 'on'; } catch { return false; }
@@ -764,12 +782,12 @@ function resumenOn() {
 export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) {
   let { embed, block = 5, cache } = opts;
   if (!history.length) return history;
-  // Sin `embed` explícito, se resuelve por bandera con import DINÁMICO.
+  // With no explicit `embed`, it is resolved by flag with a DYNAMIC import.
   if (!embed && semanticoOn()) {
     try {
       const m = await import('./embed.js');
       embed = m.embed; cache = cache || m.embedCache();
-    } catch { /* sin modelo → vía léxica, la app NO deja de funcionar */ }
+    } catch { /* no model → lexical path, the app does NOT stop working */ }
   }
   if (!embed) return packHistory(history, budgetTokens, opts);
   const ctx = prepare(history, budgetTokens, { summary: resumenOn(), ...opts });
@@ -800,13 +818,13 @@ export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) 
     }
     return selectAndEmit(ctx, ctx.budget);
   } catch {
-    return packHistory(history, budgetTokens, opts);   // sin modelo, sin red, sin cuota → léxico
+    return packHistory(history, budgetTokens, opts);   // no model, no network, no quota → lexical
   }
 }
 
 /**
- * Caché de embeddings por contenido — "pensar al escribir": un texto se
- * codifica UNA vez por sesión aunque reaparezca veinte turnos después.
+ * Embedding cache keyed by content — "think at write time": a text is encoded
+ * ONCE per session even if it reappears twenty turns later.
  */
 export function createEmbedCache(embed, max = 4000) {
   const store = new Map();

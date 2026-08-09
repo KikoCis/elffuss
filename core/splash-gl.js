@@ -1,14 +1,14 @@
-// Galaxia de partículas WebGL para el splash — sin librerías, autocontenida.
-// Técnica: GL_POINTS + blending aditivo + rotación diferencial calculada por
-// completo en el vertex shader desde una semilla (la CPU no toca nada por
-// frame). ~24k partículas en espiral rosa→violeta con motas doradas, parallax
-// de ratón y explosión al pulsar Entrar.
+// WebGL particle galaxy for the splash screen — no libraries, self-contained.
+// Technique: GL_POINTS + additive blending + differential rotation computed
+// entirely in the vertex shader from a seed (nothing is touched per frame on
+// the CPU side). ~24k particles in a pink→violet spiral with golden specks,
+// pointer parallax, and a burst when Enter is pressed.
 export function startGalaxy(container) {
   const canvas = document.createElement('canvas');
   canvas.className = 'gl';
   container.prepend(canvas);
   const gl = canvas.getContext('webgl', { alpha: true, antialias: false, depth: false });
-  if (!gl) { canvas.remove(); return null; } // fallback: se queda el gradiente CSS
+  if (!gl) { canvas.remove(); return null; } // fallback: the CSS gradient stays
 
   const N = 24000;
   const seeds = new Float32Array(N * 2);
@@ -65,7 +65,7 @@ void main(){
 
   const buf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, seeds, gl.STATIC_DRAW); // una vez; la GPU manda
+  gl.bufferData(gl.ARRAY_BUFFER, seeds, gl.STATIC_DRAW); // once; the shader drives it
   const loc = gl.getAttribLocation(prog, 'seed');
   gl.enableVertexAttribArray(loc);
   gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
@@ -74,7 +74,7 @@ void main(){
   const uT = U('t'), uAspect = U('aspect'), uBurst = U('burst'), uPar = U('par'), uDpr = U('dpr');
 
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // aditivo = brillo
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive = glow
   gl.clearColor(0, 0, 0, 0);
 
   let burstAt = 0, alive = true;

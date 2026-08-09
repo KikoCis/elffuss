@@ -1,9 +1,10 @@
-// Frase legible por humano para una tool-call («leyendo app.js…»). Compartido
-// por el cerebro CEO (ceo.js) y el streaming en vivo del chat — así nunca se
-// le enseña JSON crudo al usuario, siempre la misma redacción. Cubre los
-// nombres de herramienta de Elffuss Code (code.*, terminal.*) y de Elffuss
-// Claw (fs.*, app.*, web.*, skill.*, memory.*, tasks.*) — un tool desconocido
-// cae al genérico «nombre argumento» sin romper nada.
+// Human-readable phrase for a tool call ("leyendo app.js…"). Shared by the CEO
+// brain (ceo.js) and by the live chat streaming — so the user is never shown
+// raw JSON, and always the same wording. Covers the tool names of Elffuss Code
+// (code.*, terminal.*) and Elffuss Claw (fs.*, app.*, web.*, skill.*, memory.*,
+// tasks.*) — an unknown tool falls back to a generic "name argument" without
+// breaking anything.
+// NOTE: the returned strings are user-facing product copy and stay in Spanish.
 export function humanizeTool(name, args) {
   const p = args?.path, q = args?.query, c = args?.command, n = args?.name;
   switch (name) {
@@ -28,11 +29,10 @@ export function humanizeTool(name, args) {
   }
 }
 
-// Detecta si el buffer que va llegando EN STREAMING ha entrado en un bloque de
-// tool-call (```tool { … }) y, si es así, devuelve una frase humana en vez del
-// JSON crudo — «preparando una acción…» hasta que el nombre de la tool sea
-// legible, luego «leyendo app.js…» tan pronto como el campo aparezca, aunque
-// el JSON todavía no haya cerrado.
+// Detects whether the buffer arriving IN STREAM has entered a tool-call block
+// (```tool { … }) and, if so, returns a human phrase instead of the raw JSON —
+// "preparando una acción…" until the tool name is legible, then "leyendo
+// app.js…" as soon as the field shows up, even if the JSON has not closed yet.
 export function humanizeStreamPreview(buf) {
   if (buf.search(/```/) === -1 && !/^\s*\{\s*"tool"/.test(buf)) return null;
   const toolM = buf.match(/"tool"\s*:\s*"([\w.]+)"/);
@@ -42,7 +42,7 @@ export function humanizeStreamPreview(buf) {
   const cmdM = buf.match(/"command"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   const nameM = buf.match(/"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   const out = humanizeTool(toolM[1], { path: pathM?.[1], query: queryM?.[1], command: cmdM?.[1], name: nameM?.[1] });
-  // el nombre de la tool ya se ve pero su campo (path/query/…) aún no llegó:
-  // mejor el genérico que un «leyendo undefined…» a medio streamear
+  // the tool name is already visible but its field (path/query/…) has not
+  // arrived yet: better the generic one than a half-streamed "leyendo undefined…"
   return /undefined/.test(out) ? 'preparando una acción…' : out;
 }

@@ -1,8 +1,8 @@
-// Proveedor genérico para APIs externas (configuración avanzada):
+// Generic provider for external APIs (advanced configuration):
 //  - kind 'openai'    → /chat/completions (OpenAI, Ollama, llama-server…)
 //  - kind 'anthropic' → /v1/messages (Claude)
-// Las llamadas salen DIRECTAS del navegador del usuario al proveedor; la clave
-// no pasa por ningún servidor nuestro. Streaming SSE en ambos dialectos.
+// Calls go DIRECTLY from the user's browser to the provider; the key never
+// passes through any server of ours. SSE streaming in both dialects.
 import { packHistoryAsync } from '../context.js';
 
 let cfg = null;
@@ -81,7 +81,7 @@ async function anthropicChat(history, system, onToken) {
   return out.trim();
 }
 
-// Anthropic exige roles alternos empezando por user; fusiona consecutivos.
+// Anthropic requires alternating roles starting with user; merge consecutive ones.
 function forAnthropic(msgs) {
   const merged = [];
   for (const m of msgs) {
@@ -94,7 +94,7 @@ function forAnthropic(msgs) {
   return merged;
 }
 
-// Lector SSE común: invoca fn con el texto tras cada 'data:'.
+// Shared SSE reader: calls fn with the text after each 'data:'.
 async function readSSE(stream, fn) {
   const reader = stream.getReader();
   const dec = new TextDecoder();
@@ -110,7 +110,7 @@ async function readSSE(stream, fn) {
       if (!line.startsWith('data:')) continue;
       const payload = line.slice(5).trim();
       if (!payload) continue;
-      try { fn(payload); } catch { /* chunk parcial */ }
+      try { fn(payload); } catch { /* partial chunk */ }
     }
   }
 }
