@@ -27,6 +27,17 @@
 //
 // 5. Las perillas salen de la PRESIÓN medida, no de constantes — ver prepare().
 //
+// 6. FECHAS ABSOLUTAS al escribir. «ayer» dicho en el turno 3 es mentira en el
+//    turno 40, y eso NO es un fallo de recuperación: la línea se recupera bien y
+//    lo que lleva es falso. Se anota la fecha del turno junto al original — ver
+//    annotateDates. Sonda propia (el banco de hechos no puede verlo): la fecha
+//    pasa de estar el 0 % de las veces a estar el 100 %, por +7 tokens.
+//
+// 7. TARJETA DE RECUENTO, tras bandera. «¿cuántos ficheros has tocado?» no está
+//    en ninguna línea; ningún top-k la encuentra por construcción. Se cuenta al
+//    escribir — ver buildLedger. Cuesta −0,7 puntos de recall a presupuesto
+//    3.000 y nada a 16.000, así que va apagada por defecto.
+//
 // Medido a igual presupuesto de tokens (recall de hechos, sin juez LLM;
 // 25 sesiones, 174 sondas):
 //     truncar por la cola .........  7,0 %
@@ -178,8 +189,274 @@ function markSuperseded(msgs) {
   return stale;
 }
 
+/**
+ * FECHAS ABSOLUTAS AL ESCRIBIR — la otra cara de markSuperseded.
+ *
+ * «lo desplegamos ayer», escrito en el turno 3, es una MENTIRA en el turno 40.
+ * Y esto no lo arregla ninguna perilla de BM25, porque no es un fallo de
+ * recuperación: la línea se recupera perfectamente y el dato que lleva es falso.
+ * Igual que la caducidad — relevancia perfecta, contenido incorrecto — solo que
+ * aquí lo que caduca es la palabra, no el fichero.
+ *
+ * Por eso se resuelve al ESCRIBIR: al indexar todavía se sabe cuándo se dijo.
+ * Un turno después, ya no.
+ *
+ *   · Se ANOTA junto al original, no se sustituye: «ayer (2026-08-07)». Si la
+ *     resolución se equivoca, el modelo sigue viendo la frase de verdad.
+ *   · La referencia es la marca DEL TURNO (`m.ts`/time/timestamp/date). Sin
+ *     marca y sin `now` explícito NO SE ANOTA: inventar una fecha es justo el
+ *     fallo que esto viene a quitar.
+ *   · Precisión honesta: lo que el idioma dice con precisión de día lleva un
+ *     día; lo de semana o mes lleva el rango de la semana o el mes.
+ *   · ⚠️ No se tocan vallas de código ni resultados de herramienta: un
+ *     `2026-08-07` dentro de un diff no es una referencia temporal.
+ *
+ * Medido con sonda propia (el banco de hechos no puede ver esto: pregunta por
+ * identificadores), 32 sesiones reales, la frase en cuatro posiciones distintas:
+ * la línea se recupera 100 % · la FECHA está sin anotar 0 % · anotada 100 % ·
+ * fecha falsa (si se usara «ahora») 0 %. Coste +7 tokens sobre 2.223.
+ */
+const DAY = 86400000;
+const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const isoMonth = d => isoDay(d).slice(0, 7);
+const plusDays = (d, n) => { const x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; };
+const plusMonths = (d, n) => { const x = new Date(d.getTime()); x.setDate(1); x.setMonth(x.getMonth() + n); return x; };
+const weekOf = d => { const mon = plusDays(d, -((d.getDay() + 6) % 7)); return `${isoDay(mon)}…${isoDay(plusDays(mon, 6))}`; };
+const DOW = { domingo: 0, lunes: 1, martes: 2, miércoles: 3, miercoles: 3, jueves: 4, viernes: 5, sábado: 6, sabado: 6,
+              sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const WORD_N = { un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
+                 a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const asNum = s => (/^\d+$/.test(s) ? parseInt(s, 10) : (WORD_N[s.toLowerCase()] || null));
+// Precisión honesta: día → día, semana → rango de la semana, mes → mes.
+function shiftBy(ref, n, unit, sign) {
+  if (n == null || n > 500) return null;
+  const u = unit.toLowerCase()[0];
+  if (u === 'd') return isoDay(plusDays(ref, sign * n));
+  if (u === 's' || u === 'w') return weekOf(plusDays(ref, sign * 7 * n));
+  if (u === 'm') return isoMonth(plusMonths(ref, sign * n));
+  if (u === 'a' || u === 'y') return String(plusMonths(ref, sign * 12 * n).getFullYear());
+  return null;
+}
+// dir<0 la anterior estricta · dir>0 la siguiente · dir=0 la más reciente
+// contando hoy. El día suelto («el lunes») es AMBIGUO en los dos idiomas: se
+// resuelve como retrospectivo porque en una bitácora de trabajo casi siempre lo
+// es. Es la única regla de aquí que puede fallar, y por eso el original se queda.
+function nearestDow(ref, target, dir) {
+  const cur = ref.getDay();
+  if (dir > 0) { const f = (target - cur + 7) % 7; return plusDays(ref, f || 7); }
+  const b = (cur - target + 7) % 7;
+  return plusDays(ref, -(dir < 0 ? (b || 7) : b));
+}
+const NUM_P = '\\d{1,3}|un[ao]?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|an?|one|two|three|four|five|six|seven|eight|nine|ten';
+const UNIT_P = 'd[ií]as?|semanas?|mes(?:es)?|años?|anos?|days?|weeks?|months?|years?';
+const DOW_ES = 'lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo';
+const DOW_EN = 'monday|tuesday|wednesday|thursday|friday|saturday|sunday';
+// Orden = precedencia: la alternancia se queda con la PRIMERA que encaja.
+const WHEN = [
+  // «por la mañana» no es «mañana»: se reconoce para NO anotarla y para que la
+  // regla corta no llegue a verla.
+  ['\\b(?:por|de|a|en|desde|hasta)\\s+la\\s+mañana\\b|\\b(?:esta|una|cada|toda\\s+la|la)\\s+mañana\\b', () => null],
+  ['\\bantes\\s+de\\s+ayer\\b|\\banteayer\\b|\\bthe\\s+day\\s+before\\s+yesterday\\b', (m, r) => isoDay(plusDays(r, -2))],
+  ['\\bpasado\\s+mañana\\b|\\bthe\\s+day\\s+after\\s+tomorrow\\b', (m, r) => isoDay(plusDays(r, 2))],
+  [`\\bhace\\s+(${NUM_P})\\s+(${UNIT_P})\\b`, (m, r) => shiftBy(r, asNum(m[1]), m[2], -1)],
+  [`\\b(${NUM_P})\\s+(${UNIT_P})\\s+ago\\b`, (m, r) => shiftBy(r, asNum(m[1]), m[2], -1)],
+  [`\\bdentro\\s+de\\s+(${NUM_P})\\s+(${UNIT_P})\\b`, (m, r) => shiftBy(r, asNum(m[1]), m[2], 1)],
+  [`\\bin\\s+(${NUM_P})\\s+(${UNIT_P})\\b`, (m, r) => shiftBy(r, asNum(m[1]), m[2], 1)],
+  ['\\b(?:la\\s+)?semana\\s+(pasada|anterior|que\\s+viene|pr[óo]xima)\\b',
+    (m, r) => weekOf(plusDays(r, /pasada|anterior/i.test(m[1]) ? -7 : 7))],
+  ['\\b(last|next)\\s+week\\b', (m, r) => weekOf(plusDays(r, /last/i.test(m[1]) ? -7 : 7))],
+  ['\\b(?:el\\s+)?mes\\s+(pasado|anterior|que\\s+viene|pr[óo]ximo)\\b',
+    (m, r) => isoMonth(plusMonths(r, /pasado|anterior/i.test(m[1]) ? -1 : 1))],
+  ['\\b(last|next)\\s+month\\b', (m, r) => isoMonth(plusMonths(r, /last/i.test(m[1]) ? -1 : 1))],
+  [`\\bel\\s+(${DOW_ES})\\s+(pasado|que\\s+viene|pr[óo]ximo)\\b`,
+    (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], /pasado/i.test(m[2]) ? -1 : 1))],
+  [`\\b(last|next|this)\\s+(${DOW_EN})\\b`,
+    (m, r) => isoDay(nearestDow(r, DOW[m[2].toLowerCase()], /last/i.test(m[1]) ? -1 : (/next/i.test(m[1]) ? 1 : 0)))],
+  // Sin modificador hace falta artículo o preposición: un «Monday» suelto puede
+  // ser un nombre propio o un fichero.
+  [`\\bel\\s+(${DOW_ES})\\b`, (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], 0))],
+  [`\\bon\\s+(${DOW_EN})\\b`, (m, r) => isoDay(nearestDow(r, DOW[m[1].toLowerCase()], 0))],
+  ['\\banoche\\b|\\blast\\s+night\\b', (m, r) => isoDay(plusDays(r, -1))],
+  ['\\bayer\\b|\\byesterday\\b', (m, r) => isoDay(plusDays(r, -1))],
+  ['\\bhoy\\b|\\btoday\\b', (m, r) => isoDay(r)],
+  ['\\bmañana\\b|\\btomorrow\\b', (m, r) => isoDay(plusDays(r, 1))],
+];
+const WHEN_RE = new RegExp(WHEN.map(w => `(?:${w[0]})`).join('|'), 'gi');
+const WHEN_ONE = WHEN.map(w => new RegExp(`^(?:${w[0]})$`, 'i'));
+// Vallas, acentos graves y valla sin cerrar (mensaje a medio llegar).
+const FENCE = /```[\s\S]*?```|```[\s\S]*$|~~~[\s\S]*?~~~|`[^`\n]+`/g;
+
+export function annotateDates(text, refMs) {
+  if (!text) return text;
+  WHEN_RE.lastIndex = 0;
+  if (!WHEN_RE.test(text)) return text;       // barrido único: el caso normal sale por aquí
+  const ref = new Date(refMs);
+  if (isNaN(ref.getTime())) return text;
+  const parts = []; let last = 0, f;
+  FENCE.lastIndex = 0;
+  while ((f = FENCE.exec(text))) {
+    parts.push([text.slice(last, f.index), false], [f[0], true]);
+    last = f.index + f[0].length;
+  }
+  parts.push([text.slice(last), false]);
+  return parts.map(([s, isCode]) => isCode ? s : s.replace(WHEN_RE, (hit, ...rest) => {
+    const whole = rest[rest.length - 1], at = rest[rest.length - 2];
+    if (/^\s*\(\d{4}-\d{2}/.test(whole.slice(at + hit.length))) return hit;      // idempotente
+    // `today()`, `memory::today`, `hoy_str` o `ayer.js` son CÓDIGO aunque lleguen
+    // sin valla: una tool-call sin valla lleva rutas, y anotar dentro de una ruta
+    // la rompe. Un punto de final de frase («lo hicimos ayer.») sí se anota.
+    if (/[.:_/\\]$/.test(whole.slice(0, at)) || /^[(_]|^\.\w/.test(whole.slice(at + hit.length))) return hit;
+    for (let i = 0; i < WHEN.length; i++) {
+      const g = WHEN_ONE[i].exec(hit);
+      if (!g) continue;
+      const v = WHEN[i][1](g, ref);
+      return v ? `${hit} (${v})` : hit;
+    }
+    return hit;
+  })).join('');
+}
+
+const asTime = v => {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? (v < 1e11 ? v * 1000 : v) : null;
+  if (typeof v.getTime === 'function') return Number.isFinite(v.getTime()) ? v.getTime() : null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+};
+
+// Historial con las referencias temporales resueltas. Devuelve el MISMO array si
+// no hubo nada que anotar, para no pagar copias en el caso normal.
+function datedHistory(history, now) {
+  let touched = false;
+  const out = history.map(m => {
+    const c = m.content || '';
+    if (!c || c.startsWith('[resultado')) return m;          // salida de herramienta: intocable
+    const ref = asTime(m.ts ?? m.time ?? m.timestamp ?? m.date ?? m.createdAt) ?? asTime(now);
+    if (ref == null) return m;                                // sin fecha conocida NO se inventa
+    const a = annotateDates(c, ref);
+    if (a === c) return m;
+    touched = true;
+    return { ...m, content: a };
+  });
+  return touched ? out : history;
+}
+
+/**
+ * AGREGACIÓN — lo que no está en ninguna línea.
+ *
+ * «¿Cuántos ficheros has tocado?» no está repartido entre cuarenta líneas: es
+ * que NO EXISTE la línea que buscar. Ningún top-k la encuentra, y no por
+ * puntuar mal, sino por construcción. Como las fechas, se resuelve al ESCRIBIR:
+ * contando según pasan los resultados. Contador y nada más — sin modelo, sin
+ * resumen generado, sin juicio: es un recuento, y se lee como se lee `wc -l`.
+ *
+ * El objetivo de cada llamada sale de la llamada del ASISTENTE (el resultado no
+ * lo lleva), igual que en markSuperseded, y la familia se decide por el VERBO
+ * del nombre de la herramienta: los productos que comparten este diseño tienen
+ * herramientas distintas (`code.read` / `fs.read`) y una lista cerrada de
+ * nombres envejecería con el primer producto nuevo.
+ */
+const V_EDIT = /^(?:write|edit|create|save|patch|append|delete|remove|rm|move|rename|copy)$/;
+const V_READ = /^(?:read|view|open|cat|show)$/;
+const V_RUN = /^(?:run|exec|shell|bash|cmd)$/;
+const CALL = /"tool"\s*:\s*"([^"]+)"[\s\S]{0,300}?"(?:path|file|filename|command|cmd)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+const ERR = /^\s*(?:ERROR\b|Error:|error:|Traceback \(most recent call last\))/;
+
+export function buildLedger(msgs) {
+  const read = new Map(), edited = new Map(), ran = new Map(), errs = new Map();
+  let errN = 0;
+  msgs.forEach((msg, i) => {
+    const c = msg.content || '';
+    if (c.startsWith('[resultado')) {
+      for (const line of c.split('\n')) {
+        if (!ERR.test(line)) continue;
+        errN++; errs.set(line.trim().slice(0, 90), i);
+        break;                       // se cuentan RESULTADOS que fallaron, no líneas de traza
+      }
+      return;
+    }
+    if (msg.role !== 'assistant') return;
+    CALL.lastIndex = 0;
+    let m;
+    while ((m = CALL.exec(c))) {
+      const verb = m[1].split('.').pop().toLowerCase();
+      if (!m[2]) continue;
+      if (V_EDIT.test(verb)) edited.set(m[2], i);
+      else if (V_READ.test(verb)) read.set(m[2], i);
+      else if (V_RUN.test(verb)) ran.set(m[2], i);
+    }
+  });
+  // Un fichero editado no vuelve a contarse como leído: «cuántos has tocado» no
+  // puede contar dos veces el mismo fichero.
+  for (const k of edited.keys()) read.delete(k);
+  return { read, edited, ran, errs, errN };
+}
+
+/**
+ * La tarjeta, acotada. Tres reglas, y las tres salen de medir:
+ *
+ *  1. El RECUENTO va siempre y es el total de verdad; la enumeración se recorta.
+ *     Un recuento truncado que PARECE completo («8 ficheros» cuando fueron 200)
+ *     es peor que no dar ninguno, así que el número va aparte y la lista dice
+ *     «+N más». Cuando no cabe ni una entrada, la fila se queda en el número.
+ *  2. El techo sale del PRESUPUESTO, no de una constante.
+ *  3. Se le quita sitio a la fila que más TOKENS gasta, no a la que más entradas
+ *     tiene: dos rutas de error largas cuestan más que ocho nombres cortos.
+ *     Medido (32 sesiones, presupuesto 3.000, cobertura de los ficheros
+ *     realmente editados, a igual coste ~148 tokens): recortar por número de
+ *     entradas 67,7 % · recortar por coste 90,6 %. Sin tarjeta, 58,9 %.
+ *     Y con el techo al 3 % baja a 57,3 %: una tarjeta demasiado apretada da el
+ *     recuento gratis pero su enumeración ESTORBA.
+ *
+ * ⚠️ La tarjeta NO es gratis: en el banco de hechos de siempre (32 sesiones
+ * reales) cuesta −0,7 puntos a presupuesto 3.000 (65,7 % → 65,0 %) y ±0,0 a
+ * 16.000. Por eso va tras bandera y apagada: quien pregunte «cuántos ficheros»
+ * la quiere; quien no, está pagando por nada.
+ */
+function summaryCard(L, maxTok) {
+  const rows = [['ficheros leídos', L.read], ['ficheros editados', L.edited],
+                ['comandos', L.ran], ['errores', L.errs]];
+  const totals = [L.read.size, L.edited.size, L.ran.size, L.errN];
+  if (!totals.some(Boolean)) return null;
+  // Las MÁS RECIENTES primero: si hay que recortar, lo que se acaba de tocar es
+  // lo que más probablemente van a preguntar.
+  const listed = rows.map(([, m]) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]));
+  const caps = rows.map(() => 8);
+  const line = i => {
+    const items = listed[i].slice(0, caps[i]).map(s => s.length > 60 ? s.slice(0, 57) + '…' : s);
+    const rest = totals[i] - items.length;
+    return `${rows[i][0]} (${totals[i]})${items.length ? ': ' + items.join(' · ') : ''}` +
+           `${rest > 0 && items.length ? ` · +${rest} más` : ''}`;
+  };
+  const compose = () => ['[recuento de la sesión · automático]']
+    .concat(rows.map((r, i) => totals[i] ? line(i) : null).filter(Boolean)).join('\n');
+  let text = compose();
+  while (estTok(text) > maxTok) {
+    let worst = -1, cost = 0;
+    rows.forEach((r, i) => {
+      if (!totals[i] || !caps[i]) return;
+      const c = estTok(line(i));
+      if (c > cost) { cost = c; worst = i; }
+    });
+    if (worst < 0) break;
+    caps[worst] = Math.min(caps[worst], totals[worst]) - 1;
+    text = compose();
+  }
+  return { role: 'user', content: text };
+}
+
 // Prepara el estado común: reserva de recientes, pregunta viva, líneas y BM25.
-function prepare(history, budgetTokens) {
+function prepare(history, budgetTokens, opts = {}) {
+  // Lo que se resuelve al ESCRIBIR va antes que nada, porque cambia el material
+  // que se va a puntuar y lo que va a caber: las fechas se anotan sobre el
+  // historial, y la tarjeta se cobra del presupuesto ANTES de repartirlo — que
+  // es lo que la hace incondicional sin romper el contrato de tokens.
+  if (opts.dates !== false) history = datedHistory(history, opts.now);
+  const card = opts.summary ? summaryCard(buildLedger(history),
+    Math.max(24, Math.floor(budgetTokens * (opts.summaryFrac || 0.05)))) : null;
+  const cardTok = card ? estTok(card.content) + 4 : 0;
+  budgetTokens = Math.max(1, budgetTokens - cardTok);
+
   // PRESIÓN de compresión: qué fracción del historial cabe. Todas las perillas
   // que dependen del régimen salen de aquí, no de constantes — con 200k de
   // historial contra 32k de presupuesto no manda lo mismo que con 5k contra 3k.
@@ -225,7 +502,7 @@ function prepare(history, budgetTokens) {
     if (used >= floorTok) break;
   }
   let old = history.slice(0, history.length - recent.length);
-  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head: [] };
+  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head: [], card, budget: budgetTokens };
 
   // ── RESERVA DE CABECERA ────────────────────────────────────────────────────
   // Los PRIMEROS mensajes se conservan literales y SIN puntuar, igual que los
@@ -258,7 +535,7 @@ function prepare(history, budgetTokens) {
   }
   old = old.slice(head.length);
   used += headUsed;
-  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head };
+  if (!old.length || used >= budgetTokens) return { done: true, recent, used, head, card, budget: budgetTokens };
 
   // La pregunta VIVA: el último turno de usuario que no sea un resultado de
   // herramienta. Es contra esto que se puntúa, no contra la tarea inicial —
@@ -275,7 +552,7 @@ function prepare(history, budgetTokens) {
   const q = [...new Set(tokens(query))];
   const nMsg = Math.max(old.length - 1, 1);
   items.forEach((it, i) => { it.bm = score(i, q); it.rec = it.mi / nMsg; });
-  return { done: false, recent, old, used, items, query, recTie, pressure, head };
+  return { done: false, recent, old, used, items, query, recTie, pressure, head, card, budget: budgetTokens };
 }
 
 // Selección bajo un único presupuesto global, con MMR, y emisión con marcas de
@@ -386,17 +663,22 @@ function selectAndEmit(ctx, budgetTokens) {
     packed.push({ role: m.role, content: out.join('\n') });
   });
   if (droppedMsgs) packed.push({ role: 'user', content: `[…${droppedMsgs} mensajes antiguos omitidos…]` });
-  return [...head, ...packed, ...recent];
+  // La tarjeta va PROTEGIDA, como la cabecera y la cola, y por su mismo motivo:
+  // no compite por relevancia porque no puede ganar — es un recuento, no
+  // comparte vocabulario con nada y BM25 la tiraría siempre, que es justo el
+  // fallo que viene a tapar. Va pegada a los últimos turnos, con la pregunta
+  // viva, no al principio.
+  return [...head, ...packed, ...(ctx.card ? [ctx.card] : []), ...recent];
 }
 
 /**
  * Empaqueta el historial en `budgetTokens` — vía léxica, síncrona.
  * Es la que se usa por defecto: no necesita modelo, ni red, ni nada.
  */
-export function packHistory(history, budgetTokens = 2200) {
+export function packHistory(history, budgetTokens = 2200, opts = {}) {
   if (!history.length) return history;
-  const ctx = prepare(history, budgetTokens);
-  if (ctx.done) return [...(ctx.head || []), ...ctx.recent];
+  const ctx = prepare(history, budgetTokens, { summary: resumenOn(), ...opts });
+  if (ctx.done) return [...(ctx.head || []), ...(ctx.card ? [ctx.card] : []), ...ctx.recent];
   const max = ctx.items.reduce((m, it) => Math.max(m, it.bm), 0) || 1;
   for (const it of ctx.items) {
     // Dos estratos separados por 10 — más de lo que la penalización MMR (≤0.5)
@@ -405,7 +687,7 @@ export function packHistory(history, budgetTokens = 2200) {
     it.score = (it.bm > 0 && !it.stale) ? 10 + it.bm / max : (ctx.recTie ? it.rec : 0);
     if (it.first) it.score = Math.max(it.score, 0.5);   // cabecera de procedencia
   }
-  return selectAndEmit(ctx, budgetTokens);
+  return selectAndEmit(ctx, ctx.budget);
 }
 
 /**
@@ -440,6 +722,16 @@ function semanticoOn() {
   try { return localStorage.getItem('elffuss.semantic') === 'on'; } catch { return false; }
 }
 
+// La TARJETA DE RECUENTO también va tras bandera, y por lo mismo: cuesta ~150
+// tokens del presupuesto y −0,7 puntos de recall a presupuesto 3.000 (nada a
+// 16.000). A cambio el recuento pasa del 0 % al 100 % y la enumeración de lo
+// editado del 58,9 % al 90,6 %. Compensa en la sesión que acaba con «hazme la
+// lista de lo que tocaste»; en las demás se paga por nada.
+//   localStorage.setItem('elffuss.resumen', 'on')
+function resumenOn() {
+  try { return localStorage.getItem('elffuss.resumen') === 'on'; } catch { return false; }
+}
+
 export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) {
   let { embed, block = 5, cache } = opts;
   if (!history.length) return history;
@@ -450,9 +742,9 @@ export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) 
       embed = m.embed; cache = cache || m.embedCache();
     } catch { /* sin modelo → vía léxica, la app NO deja de funcionar */ }
   }
-  if (!embed) return packHistory(history, budgetTokens);
-  const ctx = prepare(history, budgetTokens);
-  if (ctx.done) return [...(ctx.head || []), ...ctx.recent];
+  if (!embed) return packHistory(history, budgetTokens, opts);
+  const ctx = prepare(history, budgetTokens, { summary: resumenOn(), ...opts });
+  if (ctx.done) return [...(ctx.head || []), ...(ctx.card ? [ctx.card] : []), ...ctx.recent];
 
   try {
     const blocks = [];
@@ -477,9 +769,9 @@ export async function packHistoryAsync(history, budgetTokens = 2200, opts = {}) 
       it.score = rel ? 10 + (fused.get(idOf(it)) || 0) / max : (ctx.recTie ? it.rec : 0);
       if (it.first) it.score = Math.max(it.score, 0.5);
     }
-    return selectAndEmit(ctx, budgetTokens);
+    return selectAndEmit(ctx, ctx.budget);
   } catch {
-    return packHistory(history, budgetTokens);   // sin modelo, sin red, sin cuota → léxico
+    return packHistory(history, budgetTokens, opts);   // sin modelo, sin red, sin cuota → léxico
   }
 }
 
