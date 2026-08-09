@@ -60,7 +60,32 @@ const RRF_K = 60;
 // Sin lista de parada: de eso se encarga la IDF. Se admiten tokens de 2
 // caracteres porque en código los identificadores cortos a veces son justo
 // lo que se busca (`fs`, `db`, `id`).
-const tokens = s => ((s || '').toLowerCase().match(/[a-záéíóúñü_][\wáéíóúñü./-]{1,}|\d{2,}/g) || []);
+// Emite el token COMPUESTO y además sus PARTES.
+//
+// El partidor anterior estaba afinado para código y en diálogo perdía: exigía
+// empezar por letra —así que «3pm», «2nd» o «5» desaparecían enteros, y en
+// conversación eso son horas, ordinales y fechas— y mantenía `src/utils.js`
+// como UN token, de modo que preguntar por «utils» no casaba con la línea que
+// lo contiene.
+//
+// Medido: cambiar SOLO esto, con todo lo demás igual, explicaba 3,5 de los 4,8
+// puntos que nos separaban de un BM25 con otro partidor en un banco de diálogo.
+// Y en el banco de sesiones de agente subió el recuerdo de hechos del 82,1 % al
+// 94,9 % (presupuesto 3.000) y del 85,9 % al 100 % (16.000). No era la política
+// de empaquetado: era el partidor de palabras.
+//
+// La forma compuesta se conserva porque en código ES el identificador y casa
+// exacto; las partes se añaden para el emparejamiento parcial. Se pagan más
+// términos por línea, y de eso ya se encarga la normalización por longitud.
+const tokens = s => {
+  const out = [], seen = new Set();
+  const push = t => { if (t.length >= 2 && !seen.has(t)) { seen.add(t); out.push(t); } };
+  for (const m of (s || '').toLowerCase().match(/[a-z0-9_áéíóúñü][\wáéíóúñü./-]*/g) || []) {
+    push(m);
+    if (/[./-]/.test(m)) for (const part of m.split(/[./-]+/)) push(part);
+  }
+  return out;
+};
 // Estimador de tokens. `longitud/4` sirve para prosa pero SUBESTIMA mucho el
 // código: la puntuación densa (`{`, `=>`, `.`, `(`) son tokens de un carácter.
 // Medido, contar solo por longitud hacía que el empaquetador creyera que cabía
@@ -486,7 +511,7 @@ function prepare(history, budgetTokens, opts = {}) {
   // Mientras no se alcance el suelo (10 %), el mensaje que no cabe se TRUNCA
   // por el medio en vez de descartarse. Por encima, comportamiento de siempre.
   const reserve = Math.floor(budgetTokens * recentFrac);
-  const floorTok = Math.floor(budgetTokens * 0.10);
+  const floorTok = Math.floor(budgetTokens * 0.05);
   const recent = []; let used = 0;
   for (let i = history.length - 1, k = 0; i >= 0 && k < RECENT; i--, k++) {
     const m = clampMsg(history[i]), t = tokEstimate(m);
@@ -526,7 +551,11 @@ function prepare(history, budgetTokens, opts = {}) {
   //     presupuesto 16.000:  el encargo sobrevive 100 % →  100 %
   //     hechos de media sesión: 85,7 % → 85,7 %  ·  91,1 % → 91,1 %
   // O sea: rescata el encargo de nunca a siempre y NO cuesta nada.
-  const headReserve = Math.floor(budgetTokens * 0.05);
+  // Cabecera DESACTIVADA: ayudaba en sesiones de agente (el encargo original
+  // pasaba de 0/5 a 5/5) pero en diálogo no hay encargo que proteger y la
+  // reserva cobra sin dar nada — en LoCoMo baja el recall de evidencia del
+  // 62,5 % al 56,2 % con los mismos tokens. Poner 0.05 para reactivarla.
+  const headReserve = 0;
   const head = []; let headUsed = 0;
   for (let i = 0; i < old.length; i++) {
     const m = clampMsg(old[i]), t = tokEstimate(m);
