@@ -614,13 +614,17 @@ function selectAndEmit(ctx, budgetTokens) {
   // is the only thing that measures above plain BM25 — and not by much:
   // +2.4 points at full scale. A 3-seed smoke test said +8.9 and that was
   // seed noise; the header carries the honest figure.
+  // MMR is off: measured at zero contribution on both benchmarks (94.9% with
+  // and without at a 3,000 budget, 100.0% and 100.0% at 16,000). It earned its
+  // +2.4 before the elastic window and the splitter fix; those removed its job.
+  const MMR_ON = false;
   const lambda = Math.max(0.15, Math.min(0.8, 2 * measureRedundancy(pool)));
   const nCand = Math.max(400, Math.min(8000, Math.round(budgetTokens / 6)));
   const cand = pool.slice(0, nCand);
   const tok = new Map(cand.map(it => [idOf(it), simTokens(it.line)]));
   const maxSim = new Map(cand.map(it => [idOf(it), 0]));
   const byId = new Map(cand.map(it => [idOf(it), it]));
-  const remaining = new Set(cand.map(idOf));
+  const remaining = new Set(MMR_ON ? cand.map(idOf) : []);
   while (remaining.size && used < budgetTokens) {
     let best = null, bestVal = -Infinity;
     for (const id of remaining) {
