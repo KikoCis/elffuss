@@ -85,4 +85,12 @@ La columna del medio no es un error: la versión anterior recuperaba **lo mismo 
 ### Referencias
 BM25 — Robertson, Walker, Jones, Hancock-Beaulieu & Gatford, *Okapi at TREC-3*, 1994; formulación moderna en Robertson & Zaragoza, FnTIR 3(4), 2009 · IDF — Spärck Jones, *Journal of Documentation* 28(1), 1972 · RRF — Cormack, Clarke & Buettcher, SIGIR 2009 · MMR — Carbonell & Goldstein, SIGIR 1998 · sumideros de atención — Xiao, Tian, Chen, Han & Lewis, ICLR 2024 · tiempo de validez — Snodgrass & Ahn, SIGMOD 1985.
 
+**Estos números son reproducibles con una orden**, sobre el propio código de este repositorio:
+
+```bash
+node bench/run.mjs --root core --ext .js --seeds 8
+```
+
+El banco está en [`bench/`](bench/) y no usa ningún modelo para juzgar — es una comprobación de presencia determinista. El porqué de esa decisión, y la condición `tail` que hay que batir, están explicados ahí.
+
 La historia completa, incluido lo que salió mal: **<https://bitacora.utopiaia.com/posts/16-beaten-by-doing-nothing.html>**
