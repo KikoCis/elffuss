@@ -1,6 +1,22 @@
+<div align="center">
+
 # ✳ Elffuss — core
 
-Elffuss is an agent runtime that lives **entirely in the browser**: no build step, no backend, no install — ES modules served exactly as they are written. This repository is the shared core behind two real products, and its centrepiece is the part that decides what an agent still remembers once the history stops fitting.
+**The shared runtime behind three agents that run entirely in your browser.**
+
+No build step, no backend, no install — ES modules served exactly as written.
+Its centrepiece is the part that decides what an agent still remembers once the
+history stops fitting.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-c8a06a?style=flat-square)](LICENSE)
+[![No build](https://img.shields.io/badge/build-none-8272ff?style=flat-square)](#design-rules)
+[![Runs in](https://img.shields.io/badge/runs%20in-your%20browser-54dcc6?style=flat-square)](https://elffuss.utopiaia.com)
+
+[Claw](https://claw.elffuss.utopiaia.com) · [Code](https://code.elffuss.utopiaia.com) · [Translator](https://translator.elffuss.utopiaia.com) · [elffuss.utopiaia.com](https://elffuss.utopiaia.com)
+
+</div>
+
+---
 
 **Every number below is reproducible with one command**, against this repository's own source:
 
@@ -83,6 +99,8 @@ Vanilla ES modules, no dependencies, no build:
 | `humanize.js` | Turns a tool call into a human sentence, so the user is never shown raw JSON — including mid-stream, before the JSON has closed. |
 | `splash-gl.js` | WebGL particle galaxy for the splash screen: GL_POINTS and additive blending, computed entirely in the vertex shader. |
 | `telemetry.js` | Opt-in error/feedback mailbox, off by default. Code and project content are never sent. |
+| `rlm.js` | Recursive Language Models: work an input far larger than the window by chunking it, asking each chunk (map), merging the findings (reduce) and recursing when the merge still does not fit. Also the deliberating jury and the surgical patcher — in both, the model proposes and this code verifies against the source before anything is applied. |
+| `workspace.js` | A working folder on disk: keeps sessions, skills and generated apps as ordinary files, with an inventory of what is stored, selective wipe, and a downloadable bundle for browsers without File System Access. The encrypted vault is never exported in the clear. |
 | `providers/api.js` | Generic provider for external APIs: OpenAI-compatible and Anthropic Messages, with SSE streaming, called directly from the user's browser so the key never passes through a server of ours. |
 
 ---
@@ -99,8 +117,9 @@ The products **vendor** the core into `web/js/` (same file names) and keep it in
 
 ## The products
 
-- **[Elffuss Claw](https://elffuss-claw.utopiaia.com)** — an agentic web OS: the chat is the interface, and apps are created as HTML on the fly.
-- **[Elffuss Code](https://elffuss-code.utopiaia.com)** — a VS Code-style web IDE with the coding agent built in.
+- **[Elffuss Claw](https://claw.elffuss.utopiaia.com)** — an agentic web OS: the chat is the interface, and apps are created as HTML on the fly. ([source](https://github.com/KikoCis/elffuss-claw))
+- **[Elffuss Code](https://code.elffuss.utopiaia.com)** — a VS Code-style web IDE with the coding agent built in. ([source](https://github.com/KikoCis/elffuss-code))
+- **[Elffuss Translator](https://translator.elffuss.utopiaia.com)** — real-time conversation translation with live audio skills that work while you talk. ([source](https://github.com/KikoCis/elffuss-translator))
 
 The full story, including what went wrong: **<https://bitacora.utopiaia.com/posts/16-beaten-by-doing-nothing.html>**
 

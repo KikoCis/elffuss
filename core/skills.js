@@ -19,16 +19,35 @@ export const DEFAULT_SOURCES = [
 
 let cache = []; // installed, in memory (so that systemPrompt can be synchronous)
 
+// `loaded` tells "there are no skills" apart from "we could not read them". A
+// transient IndexedDB failure used to leave the cache empty, and the next
+// install() then persisted that emptiness — wiping every installed skill.
+let loaded = false;
 export async function initSkills() {
-  cache = (await db.get('kv', KEY).catch(() => null)) || [];
+  try {
+    const stored = await db.get('kv', KEY);
+    cache = Array.isArray(stored) ? stored : [];
+    loaded = true;
+  } catch (e) {
+    cache = [];
+    loaded = false;
+    console.warn('[elffuss] could not read skills; refusing to overwrite them', e);
+  }
   return cache;
 }
+export function skillsLoaded() { return loaded; }
 
 export async function all() { return cache; }
 export function installed() { return cache; }
 export function isInstalled(repo, path) { return cache.some(s => s.repo === repo && s.path === path); }
 
 export async function install(skill) {
+  // If the initial read failed, `cache` does not represent what is installed:
+  // retry before writing, and refuse rather than destroy.
+  if (!loaded) {
+    await initSkills();
+    if (!loaded) throw new Error('Could not read your saved skills; not installing, so none are lost. Reload and try again.');
+  }
   cache = cache.filter(s => !(s.repo === skill.repo && s.path === skill.path) && s.name !== skill.name);
   const entry = { ...skill, content: (skill.content || '').slice(0, MAX_SKILL) };
   cache.push(entry);
