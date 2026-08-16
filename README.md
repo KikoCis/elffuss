@@ -18,6 +18,10 @@ history stops fitting.
 
 ---
 
+**In this repository:** [architecture](#how-it-fits-together) · [the context manager](#the-context-manager) · [what was measured](#what-was-measured-and-not-assumed) · [what is honest about this](#what-is-honest-about-this) · [what is in core/](#what-is-in-core)
+
+---
+
 **Every number below is reproducible with one command**, against this repository's own source:
 
 ```bash
@@ -25,6 +29,18 @@ node bench/run.mjs --root core --ext .js --seeds 8
 ```
 
 No API key, no model, no network, nothing to configure. That is the whole difference between this and a README full of figures nobody can check.
+
+---
+
+## How it fits together
+
+![Architecture of Elffuss: one shared core, three products, everything inside the browser tab](docs/architecture.png)
+
+Three products share one core, and the whole thing runs **inside the tab**. There is no server of ours in the picture — not because the traffic is encrypted, but because there is nothing to send anything to. The model runs on your GPU through WebGPU; your folders, your microphone and your files are reached through browser APIs, each behind an explicit permission.
+
+The core is what the three have in common: the agent loop, the context manager, the tools behind permissions, skills that install from any public repo, and the pieces that decide what gets remembered and where it is kept. Each product vendors it into `web/js/` so it stays clonable and openable with nothing installed.
+
+*(The diagram is [`docs/architecture.html`](docs/architecture.html) — a page, not an image editor.)*
 
 ---
 

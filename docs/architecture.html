@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+:root{
+  --bg:#090a11; --fg:#eae8f2; --mut:#8b929c; --line:#242938;
+  --brass:#c8a06a; --brass2:#e6c294; --indigo:#8272ff; --teal:#54dcc6; --magenta:#e779cf;
+  --serif:"Iowan Old Style",Georgia,serif; --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0}
+body{width:1440px;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,system-ui,"Segoe UI",sans-serif;padding:46px 52px 40px;position:relative;overflow:hidden}
+.aurora{position:absolute;inset:-30% -15%;filter:blur(80px) saturate(120%);pointer-events:none;
+  background:radial-gradient(34% 38% at 14% 10%,rgba(84,220,198,.13),transparent 70%),
+             radial-gradient(38% 42% at 88% 8%,rgba(130,114,255,.17),transparent 72%),
+             radial-gradient(44% 48% at 60% 96%,rgba(200,160,106,.12),transparent 74%)}
+.wrap{position:relative;z-index:1}
+h1{font-family:var(--serif);font-size:34px;font-weight:600;letter-spacing:-.4px;
+  background:linear-gradient(96deg,var(--brass2),var(--fg) 42%,var(--indigo) 112%);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.sub{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--mut);margin:8px 0 26px}
+
+/* la caja del navegador lo envuelve todo: ese es el argumento */
+.browser{border:1.5px solid var(--brass);border-radius:18px;padding:0 0 22px;position:relative;
+  background:linear-gradient(180deg,rgba(200,160,106,.045),rgba(9,10,17,0) 46%)}
+.chrome{display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid var(--line)}
+.dot{width:11px;height:11px;border-radius:50%}
+.chrome b{margin-left:10px;font-family:var(--mono);font-size:12.5px;color:var(--brass2);font-weight:500;letter-spacing:.06em}
+.chrome .note{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--mut)}
+
+.row{display:flex;gap:16px;padding:20px 20px 0}
+.col{flex:1;min-width:0}
+.tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.19em;text-transform:uppercase;color:var(--mut);margin:0 0 9px 3px}
+
+.card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:rgba(18,20,31,.78);margin-bottom:9px}
+.card b{display:block;font-family:var(--mono);font-size:13px;color:var(--fg);margin-bottom:3px}
+.card span{font-size:11.5px;color:var(--mut);line-height:1.42;display:block}
+.card.hi{border-color:var(--brass);background:linear-gradient(150deg,rgba(200,160,106,.11),rgba(18,20,31,.8))}
+.card.hi b{color:var(--brass2)}
+
+/* productos */
+.apps{display:flex;gap:16px;padding:22px 20px 0}
+.app{flex:1;border:1px solid var(--line);border-top:2px solid var(--c);border-radius:12px;padding:13px 15px;
+  background:linear-gradient(180deg,rgba(255,255,255,.028),rgba(18,20,31,.7))}
+.app b{display:block;font-family:var(--serif);font-size:16px;margin-bottom:3px}
+.app span{font-size:11.5px;color:var(--mut);line-height:1.44;display:block}
+.app i{font-family:var(--mono);font-size:10.5px;color:var(--c);font-style:normal;display:block;margin-top:6px}
+
+/* lo que toca de la máquina */
+.hw{display:flex;gap:9px;padding:20px 20px 0;flex-wrap:wrap}
+.chip{font-family:var(--mono);font-size:11px;color:var(--mut);border:1px dashed var(--line);border-radius:999px;padding:6px 13px}
+.chip b{color:var(--teal);font-weight:500}
+
+.out{display:flex;align-items:center;gap:12px;margin-top:20px;padding:13px 18px;border:1px dashed #2b2036;border-radius:12px}
+.out .x{font-family:var(--mono);font-size:22px;color:#7a4a52;line-height:1}
+.out span{font-size:12.5px;color:var(--mut);line-height:1.45}
+.out span b{color:#c9a7ae;font-weight:500}
+.foot{display:flex;justify-content:space-between;margin-top:16px;font-family:var(--mono);font-size:11px;color:var(--mut)}
+.foot b{color:var(--brass);font-weight:500}
+</style></head>
+<body>
+<div class="aurora"></div>
+<div class="wrap">
+  <h1>Elffuss — how it fits together</h1>
+  <div class="sub">one shared core · three products · nothing leaves the tab</div>
+
+  <div class="browser">
+    <div class="chrome">
+      <span class="dot" style="background:#c0655a"></span>
+      <span class="dot" style="background:#c9a15a"></span>
+      <span class="dot" style="background:#7faa7f"></span>
+      <b>the browser tab — everything below runs here</b>
+      <span class="note">no backend · no build · no install</span>
+    </div>
+
+    <div class="row">
+      <div class="col">
+        <div class="tag">the loop</div>
+        <div class="card"><b>agent.js</b><span>model → tool call → result → model. Six steps, one tool block.</span></div>
+        <div class="card hi"><b>context.js</b><span>What the agent still remembers when the history stops fitting. BM25 with endogenous IDF, line granularity, optional semantic fusion.</span></div>
+        <div class="card"><b>providers/</b><span>litert (Gemma on WebGPU) · onnx (transformers.js) · api (opt-in, direct from the browser)</span></div>
+      </div>
+      <div class="col">
+        <div class="tag">what it can do</div>
+        <div class="card"><b>skills.js</b><span>SKILL.md from any public repo, injected into the prompt. Self-editing: ask in chat and the skill rewrites itself.</span></div>
+        <div class="card"><b>tools/</b><span>files, apps, vault, tasks, web, memory — each one behind an explicit permission.</span></div>
+        <div class="card hi"><b>rlm.js</b><span>Recursive LM: chunk → ask each part → merge → recurse. Plus the deliberating jury and the surgical patcher.</span></div>
+      </div>
+      <div class="col">
+        <div class="tag">what it keeps</div>
+        <div class="card hi"><b>workspace.js</b><span>A folder on your disk: sessions, skills and apps as ordinary files. Inventory, wipe, downloadable copy.</span></div>
+        <div class="card"><b>vault + db</b><span>IndexedDB for state, AES-256-GCM for secrets. The vault is never exported in the clear.</span></div>
+        <div class="card"><b>mind.js · ceo.js</b><span>When you are idle it reviews your workspace and proposes improvements. It never edits on its own.</span></div>
+      </div>
+    </div>
+
+    <div class="apps">
+      <div class="app" style="--c:var(--brass)"><b>Claw</b><span>The chat is the interface. Apps don't exist: they are generated as HTML and rendered in the tab.</span><i>claw.elffuss.utopiaia.com</i></div>
+      <div class="app" style="--c:var(--indigo)"><b>Code</b><span>A VS Code-style IDE. Opens a real folder from your disk; the agent reads, searches and edits it.</span><i>code.elffuss.utopiaia.com</i></div>
+      <div class="app" style="--c:var(--teal)"><b>Translator</b><span>Live conversation translation, and skills that work while you talk — the surface is projected across origins.</span><i>translator.elffuss.utopiaia.com</i></div>
+    </div>
+
+    <div class="hw">
+      <span class="chip"><b>WebGPU</b> · the model runs on your GPU</span>
+      <span class="chip"><b>File System Access</b> · your folders, with permission</span>
+      <span class="chip"><b>Microphone</b> · only while you talk</span>
+      <span class="chip"><b>IndexedDB + Cache</b> · weights cached once</span>
+    </div>
+  </div>
+
+  <div class="out">
+    <span class="x">✕</span>
+    <span>No server of ours ever sees your prompts, your files or your audio — <b>there is nothing to send them to</b>. External model providers are opt-in, and their keys go straight from your browser to the provider.</span>
+  </div>
+
+  <div class="foot"><span>Apache-2.0 · ES modules, served as written</span><span><b>github.com/KikoCis/elffuss</b></span></div>
+</div>
+</body></html>
