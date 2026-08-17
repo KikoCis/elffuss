@@ -300,40 +300,295 @@ Nada más: ni explicaciones ni texto extra. Ante la duda, NO.`;
 // Aquí solo se le piden los CAMBIOS, y los aplica este código: si el fragmento
 // a buscar no está tal cual en el documento, ese cambio se descarta. El modelo
 // propone, el código decide — igual que con las citas del jurado.
-const PATCH_SYS = `Eres Elffuss arreglando tu propia app. Te doy el HTML actual y una lista de defectos. NO reescribas el documento. Devuelve SOLO los cambios mínimos, en bloques de exactamente tres líneas:
-BUSCAR: <fragmento LITERAL del código actual, copiado tal cual, en una línea>
-CAMBIAR: <con qué se sustituye, en una línea>
-MOTIVO: <qué defecto arregla>
-Repite el bloque por cada cambio. Máximo 6. El texto de BUSCAR debe existir palabra por palabra en el HTML y ser único; si no puedes copiarlo exacto, omite ese cambio. No toques nada que ya funcione.`;
+const PATCH_SYS = `Eres Elffuss arreglando tu propia app. Te doy el HTML actual y una lista de defectos COMPROBADOS ejecutandola.
+
+Arregla ESOS defectos y nada mas. No reescribas el documento. Devuelve solo los cambios, asi:
+
+BUSCAR
+<las lineas actuales, copiadas LITERALES del HTML de arriba>
+CAMBIAR
+<las lineas nuevas que las sustituyen>
+FIN
+
+Puedes usar VARIAS lineas en cada parte: si hace falta anadir codigo nuevo (por ejemplo unos addEventListener de teclado), copia en BUSCAR una linea de referencia que exista y ponla en CAMBIAR seguida del codigo nuevo.
+
+Reglas: lo de BUSCAR debe existir palabra por palabra en el HTML y aparecer una sola vez. BUSCAR y CAMBIAR nunca pueden ser iguales, eso no arregla nada. Maximo 4 parches, todos dirigidos a los defectos de la lista. No toques colores, textos ni nada que ya funcione.`;
 
 export function applyPatches(html, respuesta) {
-  const lineas = String(respuesta || '').split('\n').map(x => x.trim());
+  const texto = String(respuesta || '');
   let out = html;
   const aplicados = [], fallidos = [];
+
+  // Los parches se recogen en los DOS formatos. El de una línea era el único
+  // que había, y con él los defectos importantes son INARREGLABLES por
+  // construcción: añadir unos listeners de teclado necesita varias líneas, así
+  // que el modelo solo podía hacer retoques cosméticos (medido: cambiaba el
+  // verde de la serpiente mientras el defecto era que no responde a las teclas).
+  const parches = [];
+  // bloque multilínea:  BUSCAR \n …líneas… \n CAMBIAR \n …líneas… \n FIN
+  const bloque = /^[ \t]*BUSCAR[ \t]*$\r?\n([\s\S]*?)^[ \t]*CAMBIAR[ \t]*$\r?\n([\s\S]*?)^[ \t]*FIN[ \t]*$/gim;
+  for (const m of texto.matchAll(bloque))
+    parches.push({ buscar: m[1].replace(/\s+$/, ''), cambiar: m[2].replace(/\s+$/, '') });
+  // de una línea: BUSCAR: … / CAMBIAR: …
+  const lineas = texto.split('\n').map(x => x.trim());
   for (let i = 0; i < lineas.length; i++) {
-    const b = lineas[i].match(/^BUSCAR:\s*(.+)/i);
-    if (!b) continue;
-    const c = (lineas[i + 1] || '').match(/^CAMBIAR:\s*(.+)/i);
-    if (!c) continue;
-    const buscar = b[1].trim(), cambiar = c[1].trim();
+    const b = lineas[i].match(/^BUSCAR:\s*(.+)/i); if (!b) continue;
+    const c = (lineas[i + 1] || '').match(/^CAMBIAR:\s*(.+)/i); if (!c) continue;
+    parches.push({ buscar: b[1].trim(), cambiar: c[1].trim() });
+  }
+
+  const norm = t => t.replace(/[ \t]+/g, ' ').trim();
+  for (const { buscar, cambiar } of parches) {
     if (buscar.length < 6) continue;
+    // Un parche que no cambia nada se contaba como aplicado y gastaba uno de
+    // los seis huecos. Medido: el modelo los emite (BUSCAR y CAMBIAR idénticos).
+    if (buscar === cambiar) { fallidos.push({ buscar: buscar.slice(0, 60), motivo: 'no cambia nada' }); continue; }
+
     const veces = out.split(buscar).length - 1;
-    if (veces === 1) { out = out.replace(buscar, cambiar); aplicados.push(buscar.slice(0, 60)); }
-    else fallidos.push({ buscar: buscar.slice(0, 60), veces });   // 0 = inventado, >1 = ambiguo
+    if (veces === 1) { out = out.replace(buscar, cambiar); aplicados.push(buscar.slice(0, 60)); continue; }
+    if (veces > 1) { fallidos.push({ buscar: buscar.slice(0, 60), veces, motivo: 'aparece varias veces' }); continue; }
+
+    // No está literal: puede ser solo la sangría o los espacios, que es el
+    // error de cita más común. Se busca por líneas normalizadas, y solo se
+    // sustituye si el bloque es ÚNICO — nunca una coincidencia dudosa.
+    const bl = buscar.split('\n').map(norm);
+    const hl = out.split('\n'), hn = hl.map(norm);
+    const donde = [];
+    for (let i = 0; i + bl.length <= hn.length; i++) {
+      let igual = true;
+      for (let j = 0; j < bl.length; j++) if (hn[i + j] !== bl[j]) { igual = false; break; }
+      if (igual) { donde.push(i); if (donde.length > 1) break; }
+    }
+    if (donde.length === 1) {
+      hl.splice(donde[0], bl.length, ...cambiar.split('\n'));
+      out = hl.join('\n');
+      aplicados.push(buscar.slice(0, 60));
+    } else fallidos.push({ buscar: buscar.slice(0, 60), veces: donde.length, motivo: donde.length ? 'ambiguo ignorando espacios' : 'no existe en el HTML' });
   }
   return { html: out, aplicados, fallidos };
 }
 
-export async function deepCreate({ brief, provider, rounds = 1, onProgress = () => {}, useJury = false, editMode = 'rewrite' }) {
+
+// ── Evaluador OBJETIVO: ejecuta el artefacto y mide, no opina ───────────────
+// fast-agent (evalstate/fast-agent) usa un LLM como evaluador y refina hasta
+// una nota mínima. La idea es buena, pero preguntarle al modelo qué nota se
+// pone es preguntarle a la parte que ya demostró alucinar. Aquí el artefacto
+// se EJECUTA en un iframe aislado y se comprueba qué hace de verdad:
+//
+//   pinta      dibuja algo
+//   vivo       lo que dibuja cambia solo (hay bucle)
+//   responde   cambia al recibir teclas y ratón
+//   arranca    no aparece ya terminado
+//   completo   el documento cierra
+//
+// Medir esto costó descubrir que contar píxeles premiaba una pantalla de
+// «GAME OVER» a toda página por encima de un juego jugable.
+export async function rateArtifact(html, { ms = 2600 } = {}) {
+  if (typeof document === 'undefined') return { nota: 0, detalle: {}, medible: false };
+  // El iframe va SIN allow-same-origin a propósito: dentro corre código que ha
+  // escrito el modelo y no debe poder tocar la página que lo aloja. Eso hace su
+  // documento ilegible desde fuera, así que se le inyecta una sonda que se mide
+  // a sí misma y devuelve NÚMEROS por postMessage. Nada entra; solo salen datos.
+  const sonda = `<script>(function(){
+    var W=window, P=function(m){try{parent.postMessage(m,'*')}catch(e){}};
+    // Un juego que revienta al mover el ratón se puntuaba 5/5: la sonda medía
+    // que pintaba y que cambiaba, pero era ciega a las excepciones. Se recogen
+    // aquí dentro porque desde fuera el sandbox no deja verlas.
+    var errores=[];
+    // «responde» se medía como «el dibujo cambió tras pulsar», pero un juego que
+    // anima continuamente cambia igual sin tocar nada: un juego SORDO pasaba.
+    // Ahora se mira si llega a registrar algún escuchador de entrada, que es la
+    // propiedad de verdad. Se puede porque la sonda entra ANTES que su código.
+    var escucha = {};
+    var ENTRADA = /^(keydown|keyup|keypress|mousemove|mousedown|mouseup|click|pointerdown|pointermove|touchstart|touchmove)$/;
+    function espia(obj, nombre){
+      if(!obj || !obj.addEventListener) return;
+      var orig = obj.addEventListener;
+      obj.addEventListener = function(tipo){ if(ENTRADA.test(String(tipo))) escucha[tipo]=1; return orig.apply(this, arguments); };
+    }
+    espia(W,'window'); espia(document,'document');
+    if(W.HTMLElement && W.HTMLElement.prototype) espia(W.HTMLElement.prototype,'elementos');
+    // los manejadores puestos como propiedad (onkeydown = ...) no pasan por ahí
+    ['onkeydown','onkeyup','onclick','onmousemove','onmousedown'].forEach(function(k){
+      [W, document].forEach(function(o){
+        try{ var v; Object.defineProperty(o,k,{configurable:true,
+          get:function(){return v;}, set:function(f){ if(f) escucha[k]=1; v=f; }}); }catch(e){}
+      });
+    });
+    W.addEventListener('error',function(e){ errores.push(String((e&&e.message)||e).slice(0,120)); });
+    W.addEventListener('unhandledrejection',function(e){ errores.push('promesa: '+String((e&&e.reason&&e.reason.message)||e.reason).slice(0,110)); });
+    function leer(){ var c=document.querySelector('canvas'); if(!c) return null;
+      var x=c.getContext('2d'); if(!x) return null;
+      try{ var d=x.getImageData(0,0,c.width,c.height).data, nb=0, h=0;
+        for(var i=0;i<d.length;i+=16){ if(d[i]||d[i+1]||d[i+2]) nb++;
+          h=(h*31+d[i]+d[i+1]*3+d[i+2]*7)>>>0; }
+        return {nb:nb,h:h,txt:(document.body.innerText||'').slice(0,400).toLowerCase(),err:errores[0]||null,nerr:errores.length,escucha:Object.keys(escucha)};
+      }catch(e){ return {nb:0,h:0,txt:'',err:errores[0]||('canvas: '+e.message),nerr:errores.length+1,escucha:Object.keys(escucha)}; } }
+    W.addEventListener('message',function(e){
+      if(!e.data) return;
+      if(e.data.__sonda){ P({__sonda:1,r:leer()}); return; }
+      // Las pulsaciones hay que despacharlas DENTRO: desde fuera no cruzan el
+      // sandbox, y sin esto «responde» medía simplemente que seguía animando.
+      if(e.data.__tecla){ var k=e.data.__tecla;
+        try{ var ev={key:k,code:k===' '?'Space':k,keyCode:k===' '?32:0,bubbles:true};
+          document.dispatchEvent(new KeyboardEvent('keydown',ev));
+          W.dispatchEvent(new KeyboardEvent('keydown',ev));
+          var c=document.querySelector('canvas');
+          if(c){ var r=c.getBoundingClientRect();
+            var mv=new MouseEvent('mousemove',{clientX:r.left+r.width*0.7,clientY:r.top+r.height/2,bubbles:true});
+            document.dispatchEvent(mv); c.dispatchEvent(mv);
+            c.dispatchEvent(new MouseEvent('click',{bubbles:true})); }
+        }catch(e2){}
+      }
+    });
+    P({__sonda:'lista'});
+  })();<\/script>`;
+  const marco = document.createElement('iframe');
+  marco.setAttribute('sandbox', 'allow-scripts');
+  // DENTRO del viewport a propósito: fuera de pantalla Chrome estrangula
+  // requestAnimationFrame y el juego no anima, así que se medía como muerto un
+  // juego que funciona. Invisible por opacidad, no por posición.
+  marco.style.cssText = 'position:fixed;left:0;top:0;width:900px;height:600px;border:0;' +
+    'opacity:.01;pointer-events:none;z-index:-1';
+  const doc = String(html || '');
+  // La sonda va lo ANTES posible: puesta antes de </body> se registraba después
+  // de que el artefacto ya hubiera corrido, así que era ciega al fallo más
+  // común —el de arranque o parseo— y esos juegos salían «sin errores».
+  // Detrás de <head> y no antes del doctype: delante, el documento cae en modo
+  // quirks y cambia el tamaño del canvas, o sea que cambiaría lo que medimos.
+  marco.srcdoc = /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, m => m + sonda)
+    : /<html[^>]*>/i.test(doc) ? doc.replace(/<html[^>]*>/i, m => m + sonda)
+    : sonda + doc;
+
+  const respuestas = [];
+  const oir = e => { if (e.data && e.data.__sonda === 1) respuestas.push(e.data.r); };
+  window.addEventListener('message', oir);
+  document.body.appendChild(marco);
+
+  const esperar = t => new Promise(r => setTimeout(r, t));
+  const pedir = async () => {
+    const n = respuestas.length;
+    try { marco.contentWindow.postMessage({ __sonda: 1 }, '*'); } catch { /* */ }
+    for (let i = 0; i < 40 && respuestas.length === n; i++) await esperar(50);
+    // Al expirar el plazo, respuestas.length sigue valiendo n y esto devolvía
+    // LA LECTURA ANTERIOR. Entonces b===a daba «no está vivo» y c===b daba «no
+    // responde» sobre un juego que funciona. Y como el evaluador se usa MIENTRAS
+    // el modelo genera, el iframe llega tarde justo cuando más se le mide: un
+    // juego jugable se puntuaba 0 por no haber contestado a tiempo.
+    return respuestas.length > n ? respuestas[respuestas.length - 1] : null;
+  };
+
+  await esperar(1300);
+  const a = await pedir();
+  await esperar(ms);
+  const b = await pedir();
+  try {
+    for (const k of ['ArrowLeft', 'ArrowRight', 'ArrowUp', ' ', 'w', 's'])
+      marco.contentWindow.postMessage({ __tecla: k }, '*');
+  } catch { /* */ }
+  await esperar(1200);
+  const c = await pedir();
+
+  window.removeEventListener('message', oir);
+  marco.remove();
+
+  if (!a || !b || !c) return { nota: -1, detalle: { medible: false }, medible: false,
+    error: 'el artefacto no contestó a tiempo (no es un fallo suyo: no se pudo medir)' };
+  // Las mismas cinco señales que mide el arnés externo, para que la nota de
+  // dentro y la de fuera signifiquen lo mismo y se puedan contrastar.
+  const fallo = [a, b, c].map(x => x && x.err).find(Boolean) || null;
+  // El snake generado arrancaba ya moviéndose y chocaba contra la pared en un
+  // segundo y medio: cuando lo abres ya ha terminado. Gráficamente impecable y
+  // pasaba las cinco señales anteriores. «arranca» mira el primer instante;
+  // esto mira si SIGUE vivo unos segundos después sin que nadie juegue.
+  const seAcabo = t => /game\s*over|has perdido|fin del juego|puntuaci[óo]n final/.test(t || '');
+  const detalle = {
+    pinta: a.nb > 0,
+    vivo: !!(b && a.h !== b.h),
+    // escuchar Y reaccionar. Solo lo segundo daba por bueno un juego sordo que
+    // simplemente seguía animando; solo lo primero daría por bueno uno que
+    // registra el escuchador y no hace nada con él.
+    responde: !!((c && c.escucha && c.escucha.length) && (c && b && b.h !== c.h)),
+    arranca: !seAcabo(a.txt),
+    sobrevive: !seAcabo(b && b.txt),
+    sinErrores: !fallo,
+  };
+  // «pinta» es puerta: sin dibujar nada, un HTML en blanco se llevaba puntos
+  // gratis por «no muestra game over» y «sin errores», ciertos por vacuidad.
+  const nota = detalle.pinta ? Object.values(detalle).filter(Boolean).length : 0;
+  return { nota, maximo: Object.keys(detalle).length, detalle, medible: true, error: fallo, cerrado: /<\/html>/i.test(doc) };
+}
+
+// Pedirle a un modelo de 4B «encuentra los defectos de este HTML» es pedirle lo
+// que peor hace: leer código largo y juzgarlo. Pero tras ejecutarlo YA sabemos
+// objetivamente qué falla. Esto convierte la medición en la lista de defectos,
+// que es información dura y no una opinión del propio modelo sobre sí mismo.
+function defectosMedidos(detalle, error) {
+  if (!detalle) return [];
+  const d = [];
+  if (!detalle.pinta) d.push('No se dibuja NADA en el canvas: revisa que exista el <canvas>, que se coja su contexto 2d y que algo se pinte al arrancar.');
+  if (!detalle.vivo) d.push('La pantalla no cambia sola: falta el bucle de animación. Tiene que haber un requestAnimationFrame que se llame a sí mismo y repinte cada fotograma.');
+  if (!detalle.responde) d.push('No reacciona a la entrada: al pulsar las flechas, W/S o la barra, y al mover el ratón, no cambia nada. Los listeners de teclado deben estar en document o window (no en el canvas, que no tiene foco).');
+  if (!detalle.arranca) d.push('Arranca ya en pantalla de fin de partida: el estado inicial debe ser «jugando», no «game over».');
+  if (!detalle.sobrevive) d.push('La partida se acaba SOLA a los pocos segundos sin que el jugador haga nada, así que es injugable. Arréglalo de las dos formas: (1) que no empiece a moverse hasta la primera pulsación del jugador, y (2) que empiece lejos de los bordes y con velocidad más lenta, para que dé tiempo a reaccionar.');
+  if (!detalle.sinErrores) d.push('Lanza este error en ejecución y hay que corregirlo: ' + (error || 'error desconocido'));
+  return d;
+}
+
+export async function deepCreate({ brief, provider, rounds = 1, onProgress = () => {}, useJury = false,
+                                   editMode = 'rewrite', notaMinima = null, evaluar = null, bestOf = 1 }) {
   if (!provider || typeof provider.chat !== 'function') throw new Error('Hard Work necesita un cerebro cargado (elige un modelo arriba).');
   if (!String(brief || '').trim()) throw new Error('Hard Work: dime qué quieres que cree.');
   onProgress({ phase: 'draft' });
   let html = extractHtml(await genComplete(provider, CREATE_SYS, String(brief)));
   const trace = [{ round: 0, html }];
+
+  // Varias tiradas y nos quedamos con la que MEJOR puntúa al ejecutarla.
+  // A este tamaño de modelo, pedirle que se critique y se parchee empeora
+  // (medido: una ronda dejó un juego jugable sin pintar). Volver a tirar y
+  // juzgar por fuera no depende de que el modelo se juzgue bien a sí mismo.
+  // Requiere muestreo con temperatura: con decodificado voraz las N tiradas
+  // salen idénticas y esto sería pagar N veces por lo mismo.
+  const puedeMuestrear = typeof provider.setSampling === 'function';
+  if (bestOf > 1 && (evaluar || rateArtifact) && puedeMuestrear) {
+    const juzga = evaluar || rateArtifact;
+    let mejorHtml = html, mejorV = await juzga(html);
+    onProgress({ phase: 'candidato', i: 0, nota: mejorV.nota });
+    for (let i = 1; i < bestOf; i++) {
+      provider.setSampling({ temperature: 0.85, seed: 1000 + i * 137 });
+      const otro = extractHtml(await genComplete(provider, CREATE_SYS, String(brief)));
+      const v = otro ? await juzga(otro) : { nota: -1 };
+      onProgress({ phase: 'candidato', i, nota: v.nota });
+      trace.push({ candidato: i, html: otro, nota: v.nota });
+      if (v.nota > mejorV.nota) { mejorHtml = otro; mejorV = v; }
+    }
+    provider.setSampling(null);            // dejarlo como estaba: voraz
+    html = mejorHtml; trace[0].html = html; trace[0].nota = mejorV.nota;
+    onProgress({ phase: 'mejorCandidato', nota: mejorV.nota });
+  }
+  // Con criterio de nota: se guarda la MEJOR versión, no la última. Medimos que
+  // una ronda de más puede empeorar (un juego jugable acabó en pantalla de fin),
+  // así que devolver «lo último» es devolver a veces lo peor.
+  const juez = notaMinima != null ? (evaluar || rateArtifact) : null;
+  let mejor = html, mejorNota = -1, ultimoDetalle = null, ultimoError = null;
+  if (juez) {
+    const v = await juez(html);
+    mejorNota = v.nota; ultimoDetalle = v.detalle; ultimoError = v.error;
+    trace[0].nota = v.nota; trace[0].detalle = v.detalle;
+    onProgress({ phase: 'rated', round: 0, nota: v.nota, detalle: v.detalle });
+    if (v.nota >= notaMinima) { onProgress({ phase: 'done', rounds: 0, motivo: 'ya cumplía' }); return { html, trace, nota: v.nota }; }
+  }
   for (let r = 1; r <= rounds; r++) {
     onProgress({ phase: 'critique', round: r });
     let critique;
-    if (useJury) {
+    // Si hemos ejecutado el artefacto, lo MEDIDO manda: son defectos
+    // comprobados, no sospechas. La crítica del modelo va detrás, como apoyo.
+    const medidos = juez ? defectosMedidos(ultimoDetalle, ultimoError) : [];
+    if (medidos.length) {
+      critique = 'DEFECTOS COMPROBADOS EJECUTANDO EL JUEGO (corrige estos, son seguros):\n'
+        + medidos.map(x => '- ' + x).join('\n');
+      onProgress({ phase: 'critique', round: r, medidos: medidos.length });
+    } else if (useJury) {
       const v = await juryReview({ artifact: html, provider, onProgress });
       critique = v.defects.length
         ? v.defects.map(d => `- ${d.text} (${d.votes} de ${v.jurors} revisores)`).join('\n')
@@ -353,9 +608,22 @@ export async function deepCreate({ brief, provider, rounds = 1, onProgress = () 
       const improved = extractHtml(await genComplete(provider, REWRITE_SYS, `HTML ACTUAL:\n${html}\n\nCRÍTICA A CORREGIR:\n${critique}`));
       if (improved && /<\w+[\s>]/.test(improved)) { html = improved; trace.push({ round: r, critique, html }); }
     }
+    if (juez) {
+      const v = await juez(html);
+      ultimoDetalle = v.detalle; ultimoError = v.error;
+      trace[trace.length - 1].nota = v.nota; trace[trace.length - 1].detalle = v.detalle;
+      onProgress({ phase: 'rated', round: r, nota: v.nota, detalle: v.detalle });
+      if (v.nota > mejorNota) { mejorNota = v.nota; mejor = html; }
+      if (v.nota >= notaMinima) { onProgress({ phase: 'done', rounds: r, motivo: 'alcanzó la nota' }); return { html: mejor, trace, nota: mejorNota }; }
+      // Antes se paraba en cuanto una ronda puntuaba por debajo de la mejor. Con
+      // eso una lectura floja tiraba las rondas que quedaban, y como siempre se
+      // devuelve la MEJOR, seguir no puede empeorar el resultado: solo cuesta
+      // tiempo. Se gasta el presupuesto y se elige al final.
+      if (v.nota < mejorNota) onProgress({ phase: 'peor', round: r, nota: v.nota, mejor: mejorNota });
+    }
   }
   onProgress({ phase: 'done', rounds: trace.length - 1 });
-  return { html, trace };
+  return juez ? { html: mejor, trace, nota: mejorNota } : { html, trace };
 }
 
 // ── Recolección de material desde una carpeta autorizada (File System Access) ──
