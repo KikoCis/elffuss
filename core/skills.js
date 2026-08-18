@@ -1,14 +1,14 @@
-// Elffuss Code skills: markdown instructions (Claude Code's SKILL.md format)
-// that the model follows when they apply. They install from the big OFFICIAL
-// catalogue (github.com/anthropics/skills), from the official plugins, or from
-// ANY public repo (community marketplaces such as OpenClaude/openclaw).
-// Everything is transparent: you see the repo, the list, and the SKILL.md that
-// gets injected. They are stored in IndexedDB (nothing leaves the browser).
+// Skills de Elffuss Code: instrucciones en markdown (formato SKILL.md de
+// Claude Code) que el modelo sigue cuando aplican. Se instalan desde el
+// catálogo grande OFICIAL (github.com/anthropics/skills), desde los plugins
+// oficiales, o desde CUALQUIER repo público (marketplaces de la comunidad
+// tipo OpenClaude/openclaw). Todo transparente: se ve el repo, la lista y el
+// SKILL.md que se inyecta. Se guardan en IndexedDB (nada sale del navegador).
 import * as db from './db.js';
 
-const KEY = 'skills';          // installed skills
-const SRC_KEY = 'skills.sources'; // custom repos added by the user
-const MAX_SKILL = 12_000;      // characters of the body injected into the model
+const KEY = 'skills';          // skills instaladas
+const SRC_KEY = 'skills.sources'; // repos personalizados añadidos por el usuario
+const MAX_SKILL = 12_000;      // caracteres del cuerpo que se inyectan al modelo
 
 export const CATALOG_REPO = 'anthropics/skills';
 export const DEFAULT_SOURCES = [
@@ -17,11 +17,12 @@ export const DEFAULT_SOURCES = [
   { repo: 'anthropics/claude-plugins-official', label: 'Anthropic · Claude Code Plugins (oficial)', official: true },
 ];
 
-let cache = []; // installed, in memory (so that systemPrompt can be synchronous)
+let cache = []; // instaladas, en memoria (para que el systemPrompt sea síncrono)
 
-// `loaded` tells "there are no skills" apart from "we could not read them". A
-// transient IndexedDB failure used to leave the cache empty, and the next
-// install() then persisted that emptiness — wiping every installed skill.
+// `loaded` distingue «no hay skills» de «no se pudo leer»: si la lectura
+// falla, cache queda vacío pero loaded=false, y install() se niega a persistir
+// (antes, un fallo transitorio de IndexedDB borraba TODAS las skills al
+// guardar la siguiente).
 let loaded = false;
 export async function initSkills() {
   try {
@@ -31,7 +32,7 @@ export async function initSkills() {
   } catch (e) {
     cache = [];
     loaded = false;
-    console.warn('[elffuss] could not read skills; refusing to overwrite them', e);
+    console.warn('[elffuss] no se pudieron leer las skills; no las sobrescribiré', e);
   }
   return cache;
 }
@@ -42,21 +43,20 @@ export function installed() { return cache; }
 export function isInstalled(repo, path) { return cache.some(s => s.repo === repo && s.path === path); }
 
 export async function install(skill) {
-  // If the initial read failed, `cache` does not represent what is installed:
-  // retry before writing, and refuse rather than destroy.
+  // Si la carga inicial falló, cache no representa lo instalado: reintentar
+  // leer antes de escribir. Sin esto, guardar aquí borraría las skills reales.
   if (!loaded) {
     await initSkills();
-    if (!loaded) throw new Error('Could not read your saved skills; not installing, so none are lost. Reload and try again.');
+    if (!loaded) throw new Error('No pude leer tus skills guardadas; no instalo para no perderlas. Recarga la página e inténtalo otra vez.');
   }
   cache = cache.filter(s => !(s.repo === skill.repo && s.path === skill.path) && s.name !== skill.name);
   const entry = { ...skill, content: (skill.content || '').slice(0, MAX_SKILL) };
   cache.push(entry);
   await db.set('kv', KEY, cache);
-  return entry;                       // returns the full skill (name, description…)
+  return entry;                       // devuelve la skill completa (name, description…)
 }
 
-// "How to use it" message after installing: what it does + an example of what
-// to ask for. The returned copy is user-facing and stays in Spanish.
+// Mensaje «cómo usarla» tras instalar: qué hace + un ejemplo de qué pedir.
 export function usageMessage(skill) {
   const desc = (skill.description || '').trim();
   const ejemplo = firstExample(skill) || `algo relacionado con «${skill.name}»`;
@@ -65,7 +65,7 @@ export function usageMessage(skill) {
     `Ya la sigo en cada conversación. Para usarla, pídeme por ejemplo:\n\n> ${ejemplo}`;
 }
 
-// Tries to pull a usage example out of the SKILL.md body (example/usage lines).
+// Intenta sacar un ejemplo de uso del cuerpo del SKILL.md (líneas de ejemplo/uso).
 function firstExample(skill) {
   const body = skill.content || '';
   const m = body.match(/(?:ejemplo|example|uso|usage|prueba|try)[^\n:]*[:：]\s*["“]?([^\n"”]{6,90})/i)
@@ -82,7 +82,7 @@ export async function get(name) {
   return cache.find(s => s.name.toLowerCase() === String(name).toLowerCase()) || null;
 }
 
-// ---- sources (repos) ----
+// ---- fuentes (repos) ----
 export async function sources() {
   const custom = (await db.get('kv', SRC_KEY).catch(() => null)) || [];
   return [...DEFAULT_SOURCES, ...custom];
@@ -101,8 +101,8 @@ export async function removeSource(repo) {
   await db.set('kv', SRC_KEY, custom.filter(s => s.repo !== repo));
 }
 
-// ---- catalogue from GitHub ----
-// A single call to the repo's git tree → every SKILL.md.
+// ---- catálogo desde GitHub ----
+// Una sola llamada al árbol git del repo → todos los SKILL.md.
 export async function listFromRepo(repo) {
   let tree, branch;
   for (const b of ['main', 'master']) {
@@ -117,7 +117,7 @@ export async function listFromRepo(repo) {
     .sort((a, b) => a.dir.localeCompare(b.dir));
 }
 
-// Downloads the SKILL.md and installs it (simple YAML frontmatter).
+// Descarga el SKILL.md y lo instala (frontmatter YAML simple).
 export async function installFromRepo(entry) {
   let md = null;
   for (const b of [entry.branch, 'main', 'master'].filter(Boolean)) {
@@ -139,9 +139,9 @@ export function parseSkill(md, fallbackName = 'skill') {
   return { name, description, content };
 }
 
-// Skill maker: Elffuss builds a skill of its own (SKILL.md) out of whatever the
-// user wants, and installs it instantly. It shows up in the Skills tab and is
-// injected into the prompt of the following turns.
+// Creador de skills: Elffuss fabrica una skill propia (SKILL.md) a partir de
+// lo que el usuario quiere, y la instala al instante. Aparece en la pestaña
+// Skills y se inyecta en el prompt de los siguientes turnos.
 export async function createSkill({ name, description, instructions } = {}) {
   if (!name || !instructions) throw new Error('Faltan name o instructions');
   const skill = {
@@ -155,11 +155,16 @@ export async function createSkill({ name, description, instructions } = {}) {
   return `Skill «${skill.name}» creada e instalada. Ya la sigo en cada conversación (mírala en la pestaña Skills).`;
 }
 
-// Block for the systemPrompt (synchronous, straight from the cache). The
-// injected wording is prompt content, not documentation: it stays in Spanish.
+// Bloque para el systemPrompt (síncrono, desde la caché).
 export function skillsPromptBlock() {
   if (!cache.length) return '';
+  const nombres = cache.map(s => `«${s.name}»`).join(', ');
   const parts = cache.map(s =>
     `### Skill «${s.name}»${s.repo ? ` (de ${s.repo})` : ''}\n${s.description || ''}\n${(s.content || '').slice(0, MAX_SKILL)}`);
-  return `\n\nSKILLS ACTIVAS (instrucciones especializadas; síguelas cuando la tarea encaje):\n${parts.join('\n\n')}`;
+  return `\n\nSKILLS INSTALADAS — son capacidades que TIENES AHORA MISMO: ${nombres}.\n` +
+    `REGLAS con las skills:\n` +
+    `- Si la petición encaja con una skill (aunque el usuario la nombre con otras palabras o un nombre parecido, empareja por el TEMA de su descripción), ÚSALA siguiendo sus instrucciones al pie de la letra.\n` +
+    `- NUNCA digas que no tienes esa skill o esa capacidad: la tienes, está aquí abajo.\n` +
+    `- Si la skill incluye una plantilla de app (HTML), créala con la herramienta app.create COPIANDO esa plantilla y adaptando solo lo que la skill indique — no inventes una app genérica distinta.\n\n` +
+    parts.join('\n\n');
 }
