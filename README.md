@@ -10,9 +10,9 @@ history stops fitting.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-c8a06a?style=flat-square)](LICENSE)
 [![No build](https://img.shields.io/badge/build-none-8272ff?style=flat-square)](#design-rules)
-[![Runs in](https://img.shields.io/badge/runs%20in-your%20browser-54dcc6?style=flat-square)](https://elffuss.utopiaia.com)
+[![Runs in](https://img.shields.io/badge/runs%20in-your%20browser-54dcc6?style=flat-square)](https://elffuss.com)
 
-[Claw](https://claw.elffuss.utopiaia.com) · [Code](https://code.elffuss.utopiaia.com) · [Translator](https://translator.elffuss.utopiaia.com) · [elffuss.utopiaia.com](https://elffuss.utopiaia.com)
+[Claw](https://claw.elffuss.com) · [Code](https://code.elffuss.com) · [Translator](https://translator.elffuss.com) · [elffuss.com](https://elffuss.com)
 
 </div>
 
@@ -133,9 +133,9 @@ The products **vendor** the core into `web/js/` (same file names) and keep it in
 
 ## The products
 
-- **[Elffuss Claw](https://claw.elffuss.utopiaia.com)** — an agentic web OS: the chat is the interface, and apps are created as HTML on the fly. ([source](https://github.com/KikoCis/elffuss-claw))
-- **[Elffuss Code](https://code.elffuss.utopiaia.com)** — a VS Code-style web IDE with the coding agent built in. ([source](https://github.com/KikoCis/elffuss-code))
-- **[Elffuss Translator](https://translator.elffuss.utopiaia.com)** — real-time conversation translation with live audio skills that work while you talk. ([source](https://github.com/KikoCis/elffuss-translator))
+- **[Elffuss Claw](https://claw.elffuss.com)** — an agentic web OS: the chat is the interface, and apps are created as HTML on the fly. ([source](https://github.com/KikoCis/elffuss-claw))
+- **[Elffuss Code](https://code.elffuss.com)** — a VS Code-style web IDE with the coding agent built in. ([source](https://github.com/KikoCis/elffuss-code))
+- **[Elffuss Translator](https://translator.elffuss.com)** — real-time conversation translation with live audio skills that work while you talk. ([source](https://github.com/KikoCis/elffuss-translator))
 
 The full story, including what went wrong: **<https://bitacora.utopiaia.com/posts/16-beaten-by-doing-nothing.html>**
 
