@@ -1,5 +1,5 @@
 // Skills de Elffuss Code: instrucciones en markdown (formato SKILL.md de
-// Claude Code) que el modelo sigue cuando aplican. Se instalan desde el
+// agente) que el modelo sigue cuando aplican. Se instalan desde el
 // catálogo grande OFICIAL (github.com/anthropics/skills), desde los plugins
 // oficiales, o desde CUALQUIER repo público (marketplaces de la comunidad
 // tipo OpenClaude/openclaw). Todo transparente: se ve el repo, la lista y el
@@ -13,8 +13,8 @@ const MAX_SKILL = 12_000;      // caracteres del cuerpo que se inyectan al model
 export const CATALOG_REPO = 'anthropics/skills';
 export const DEFAULT_SOURCES = [
   { repo: 'bbgnsurftech/claude-skills-collection', label: 'Comunidad · Mega-colección (1000+ skills)', official: true },
-  { repo: 'anthropics/skills', label: 'Anthropic · Agent Skills (oficial de Claude Code)', official: true },
-  { repo: 'anthropics/claude-plugins-official', label: 'Anthropic · Claude Code Plugins (oficial)', official: true },
+  { repo: 'anthropics/skills', label: 'Anthropic · Agent Skills (oficial)', official: true },
+  { repo: 'anthropics/claude-plugins-official', label: 'Anthropic · Plugins oficiales', official: true },
 ];
 
 let cache = []; // instaladas, en memoria (para que el systemPrompt sea síncrono)

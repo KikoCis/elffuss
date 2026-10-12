@@ -1,4 +1,4 @@
-// Minimal, SAFE markdown for the chat (Claude Code plugin style): escape ALL
+// Minimal, SAFE markdown for the chat (agent plugin style): escape ALL
 // the HTML first, then apply a bounded set of transformations.
 // Supports: ``` code blocks, `inline`, **bold**, *italics*, #### headings,
 // - or numbered lists, and line breaks.

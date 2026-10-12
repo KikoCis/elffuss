@@ -110,7 +110,7 @@ Vanilla ES modules, no dependencies, no build:
 | `embed.js` | The semantic side: a small multilingual embedding model in the browser, loaded lazily and only behind the flag, with a per-content session cache. |
 | `ceo.js` | Autonomous "CEO brain": when the user is idle, several profiles think in parallel over the workspace and leave improvement proposals. It never modifies existing files, and it stops the moment the user comes back. |
 | `mind.js` | The Mind view: the brain's thinking rendered as a 3D world, with the project's real city underneath and a beam dropping onto each file as it is touched. |
-| `skills.js` | Claude Code skills: installs `SKILL.md` from `anthropics/skills`, the official plugins, or any public repo, and injects them into the system prompt. |
+| `skills.js` | Skills for Elffuss: installs `SKILL.md` from `anthropics/skills`, the official plugins, or any public repo, and injects them into the system prompt. |
 | `md.js` | Safe markdown renderer for the chat — all HTML escaped first, then a bounded set of transformations. |
 | `humanize.js` | Turns a tool call into a human sentence, so the user is never shown raw JSON — including mid-stream, before the JSON has closed. |
 | `splash-gl.js` | WebGL particle galaxy for the splash screen: GL_POINTS and additive blending, computed entirely in the vertex shader. |
